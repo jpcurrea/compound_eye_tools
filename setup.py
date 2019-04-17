@@ -17,12 +17,12 @@ setup(
     'measurements (inter-ommatidial angle, ommatidial area, ommatia count, etc.).',
     long_description=open('README.txt').read(),
     install_requires=[
-        'numpy'
+        'numpy',
         'matplotlib',
         'scipy',
         'pandas',
         'PIL',
         'sty',
-        'hdbscan'
+        'hdbscan',
     ],
 )
