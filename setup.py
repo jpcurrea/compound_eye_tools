@@ -21,7 +21,7 @@ setup(
         'matplotlib',
         'scipy',
         'pandas',
-        'PIL',
+        'pillow',
         'sty',
         'hdbscan',
     ],
