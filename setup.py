@@ -23,7 +23,6 @@ setup(
         'pandas',
         'pillow',
         'sty',
-        'hdbscan',
     ],
     dependency_links=[
         'git+https://github.com/scikit-learn-contrib/hdbscan.git#egg=hdbscan'
