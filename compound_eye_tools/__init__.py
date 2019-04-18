@@ -70,6 +70,9 @@ def cartesian_to_spherical(pts, center=np.array([0, 0, 0])):
     return polar.T
 
 class Points():
+    """Stores coordinate data in both cartesian and spherical coordinates. 
+    It is setup for indexing and is used throughout the pipeline.
+    """
     def __init__(self, arr, center_points=True, polar=None):
         self.pts = np.array(arr)
         if arr.ndim > 1:
@@ -115,3 +118,24 @@ class Points():
             center = self.center
         self.polar = cartesian_to_spherical(self.pts, center=center)
         self.theta, self.phi, self.radii = self.polar.T
+
+#     def qtscatter(self, colors=None):
+#         if colors is None:
+#             colors = (1, 1, 1, 1)
+        
+
+# class QTScatter():
+#     """Plots an array of 3d points, size = N x 3 where N is the number of points, 
+#     using a different thread. This is to avoid slowing down calculations by the main thread.
+#     """
+#     def __init__(self, arr, colors):
+#         self.arr = arr
+#         self.colors = colors
+
+#     def qt_thread(self):
+#         self.app = QtGui.QApplication([])
+#         self.pqt_window = gl.GLViewWidget()
+#         self.pqt_window.opts['distance'] = 1000
+#         self.pqt_window.show()
+#         self.pqt_window.setWindowTitle('Eye Viewer')
+        
