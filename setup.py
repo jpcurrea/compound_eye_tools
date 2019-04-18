@@ -22,6 +22,7 @@ setup(
         'scipy',
         'pandas',
         'pyqt5',
+        'PyOpenGL',
         'pyqtgraph',
         'pillow',
         'sty',
