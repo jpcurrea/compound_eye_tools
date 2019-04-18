@@ -21,6 +21,7 @@ setup(
         'matplotlib',
         'scipy',
         'pandas',
+        'pyqt5',
         'pyqtgraph',
         'pillow',
         'sty',
