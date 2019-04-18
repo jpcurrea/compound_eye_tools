@@ -25,9 +25,10 @@ from compound_eye_tools import *
 
 # 0a. let user select, from images at different orientations,
 # the range of densities corresponding to the crystalline cones
-folder = "../cluster_data/21968/stack/"
+folder = "./"
 fns = os.listdir(folder)
 fns = [os.path.join(folder, fn) for fn in fns if fn.endswith(".tif")]
+fns = sorted(fns)
 
 zs = len(fns)
 imgs = []
