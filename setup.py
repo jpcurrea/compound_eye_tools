@@ -22,6 +22,9 @@ setup(
         'matplotlib',
         'scipy',
         'pandas',
+        'pyqt5',
+        'PyOpenGL',
+        'pyqtgraph',
         'pillow',
         'sty',
         'hdbscan'
