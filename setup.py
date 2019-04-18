@@ -21,6 +21,7 @@ setup(
         'matplotlib',
         'scipy',
         'pandas',
+        'pyqtgraph',
         'pillow',
         'sty',
         'hdbscan'
