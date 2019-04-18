@@ -7,10 +7,10 @@ setup(
     author='John Paul Currea',
     author_email='johnpaulcurrea@gmail.com',
     packages=['compound_eye_tools'],
-    scripts=[
-        './bin/filter_data.py', './bin/eye_segmentation.py',
-        './bin/crystalline_cone_segmentation.py',
-        './bin/eye_measurements.py', './bin/extract_cones.py'],
+    scripts=['./bin/extract_cones.py'],
+    entry_points={
+        'console_scripts':['extract-cones=compound_eye_tools.command_line:main'],
+        },
     url='https://github.com/jpcurrea/compound_eye_tools',
     license='LICENSE.txt',
     description='This package offers tools and a general pipeline/interface ' +
