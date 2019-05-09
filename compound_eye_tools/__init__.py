@@ -21,6 +21,12 @@ def print_progress(part, whole):
     sys.stdout.write("[%-20s] %d%%" % ("="*int(20*prop), 100*prop))
     sys.stdout.flush()
 
+def fit_line(data, component=0):             # fit 3d line to 3d data
+    m = data.mean(0)
+    max_val = np.round(2*abs(data - m).max()).astype(int)
+    uu, dd, vv = np.linalg.svd(data - m)
+    return vv[component]
+
 def bootstrap_ci(arr, reps=1000, ci_range=[2.5, 97.5], stat_func=np.mean):
     pseudo_distro = np.random.choice(arr, (len(arr), reps))
     if stat_func is not None:
@@ -64,16 +70,36 @@ def sphereFit(spX, spY, spZ):
 def cartesian_to_spherical(pts, center=np.array([0, 0, 0])):
     pts = pts - center
     radii = LA.norm(np.copy(pts), axis=1)
-    theta = np.arccos(np.copy(pts)[:, 0]/radii)
-    phi = np.arctan2(np.copy(pts)[:, 1], np.copy(pts)[:, 2]) + np.pi
+    theta = np.arccos(np.copy(pts)[:, 2]/radii)
+    phi = np.arctan2(np.copy(pts)[:, 1], np.copy(pts)[:, 0]) + np.pi
     polar = np.array([theta, phi, radii])
     return polar.T
+
+def unit_vector(vector):
+    """ Returns the unit vector of the vector.  """
+    return vector / np.linalg.norm(vector)
+
+def angle_between(v1, v2):
+    """ Returns the angle in radians between vectors 'v1' and 'v2'::
+
+            >>> angle_between((1, 0, 0), (0, 1, 0))
+            1.5707963267948966
+            >>> angle_between((1, 0, 0), (1, 0, 0))
+            0.0
+            >>> angle_between((1, 0, 0), (-1, 0, 0))
+            3.141592653589793
+    """
+    v1_u = unit_vector(v1)
+    v2_u = unit_vector(v2)
+    return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
 
 class Points():
     """Stores coordinate data in both cartesian and spherical coordinates. 
     It is setup for indexing and is used throughout the pipeline.
     """
-    def __init__(self, arr, center_points=True, polar=None):
+    def __init__(self, arr, center_points=True,
+                 polar=None, spherical_conversion=True,
+                 rotate_com=False):
         self.pts = np.array(arr)
         if arr.ndim > 1:
             assert self.pts.shape[1] == 3, "Input array should have shape N x 3. Instead it has shape {} x {}.".format(self.pts.shape[0], self.pts.shape[1])
@@ -86,23 +112,26 @@ class Points():
         if polar is not None:
             self.polar = polar
             self.theta, self.phi, self.radii = self.polar.T
-        if center_points:
+        if spherical_conversion:
             # fit sphere
             x, y, z = self.pts.T
             self.radius, self.center = sphereFit(x, y, z)
             # center points using the center of that sphere
-            self.pts = self.pts -  self.center
-            self.center = self.center - self.center
+            if center_points:
+                self.pts = self.pts -  self.center
+                self.center = self.center - self.center
+            self.spherical()
             # rotate points using the center of mass in theta and phi
-            com = self.pts.mean(0)
-            polar = cartesian_to_spherical(com.reshape((1, -1)))
-            self.polar_com = polar
-            theta_offset, phi_offset, r_m = np.squeeze(polar)
-            theta_offset = np.pi/2. - theta_offset
-            phi_offset = np.pi - phi_offset
-            self.pts = rotate(self.pts, theta_offset, axis=1)
-            self.pts = rotate(self.pts, theta_offset, axis=2)
-            # self.pts = rotate(self.pts, phi_offset, axis=0)
+            if rotate_com:
+                com = self.pts.mean(0)
+                polar = cartesian_to_spherical(com.reshape((1, -1)))
+                self.polar_com = polar
+                theta_offset, phi_offset, r_m = np.squeeze(polar)
+                theta_offset = np.pi/2. - theta_offset
+                phi_offset = np.pi - phi_offset
+                self.pts = rotate(self.pts, theta_offset, axis=1)
+                self.pts = rotate(self.pts, theta_offset, axis=2)
+                self.pts = rotate(self.pts, phi_offset, axis=0)
         # grab spherical coordinates of centered points
         self.x, self.y, self.z = self.pts.T
 
@@ -118,6 +147,9 @@ class Points():
             center = self.center
         self.polar = cartesian_to_spherical(self.pts, center=center)
         self.theta, self.phi, self.radii = self.polar.T
+
+    def get_line(self):
+        return fit_line(self.pts)
 
 #     def qtscatter(self, colors=None):
 #         if colors is None:

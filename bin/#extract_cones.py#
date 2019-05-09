@@ -12,7 +12,8 @@ print("0. Select the range of densities predominantly in the crystalline cones, 
 
 # 0a. let user select, from images at different orientations,
 # the range of densities corresponding to the crystalline cones
-folder = "./"
+folder = "/Volumes/Seagate Backup Plus Drive/Yash_CT_March2018/S2_2018_03_15/S2/"
+# folder = "./"
 fns = os.listdir(folder)
 fns = [os.path.join(folder, fn) for fn in fns if fn.endswith(".tif")]
 fns = sorted(fns)
