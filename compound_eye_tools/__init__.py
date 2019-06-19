@@ -119,7 +119,7 @@ class Points():
                                             "N x 3. Instead it has "
                                             "shape {} x {}.".format(
                                                 self.pts.shape[0],
-                                                self.pts.shape[1])
+                                                self.pts.shape[1]))
         else:
             assert self.pts.shape[0] == 3, ("Input array should have shape "
                                             "3 or N x 3. Instead it has "
