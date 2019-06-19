@@ -71,11 +71,11 @@ def sphereFit(spX, spY, spZ):
     A[:, 1] = spY*2
     A[:, 2] = spZ*2
     A[:, 3] = 1
-    C, residules, rank, sigval = np.linalg.lstsq(A, f, rcond=None)
+    C, residuals, rank, sigval = np.linalg.lstsq(A, f, rcond=None)
     #   solve for the radius
     t = (C[0]*C[0])+(C[1]*C[1])+(C[2]*C[2])+C[3]
     radius = math.sqrt(t)
-    return radius, np.squeeze(C[:-1])
+    return radius, np.squeeze(C[:-1]), residuals
 
 def cartesian_to_spherical(pts, center=np.array([0, 0, 0])):
     # theta must be between 
@@ -135,7 +135,7 @@ class Points():
         if spherical_conversion:
             # fit sphere
             x, y, z = self.pts.T
-            self.radius, self.center = sphereFit(x, y, z)
+            self.radius, self.center, self.residuals = sphereFit(x, y, z)
             if center_points:
                 # center points using the center of that sphere
                 self.pts = self.pts - self.center
