@@ -435,4 +435,4 @@ pqt_window.addItem(scatter)
 # l_graph2 = gl.GLLinePlotItem(pos=np.array([a2, b2]), color=[0,0,1,1])
 # pqt_window.addItem(l_graph2)
 
-# app.exec_()
+app.exec_()
