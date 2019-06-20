@@ -30,6 +30,7 @@ img = imgs[int(.5*zs)]
 
 slide = pg.image(arr)
 slide.setPredefinedGradient('greyclip')
+slide.setLevels(0, img.max() + 1000)
 
 ret = input("Use the bottom slide bar or the arrow keys to change slides and the right slide bar to select the range of density values corresponding predominantly to the crystaline cones. Left click and drag with the mouse to move the image around and use the scroll wheel to zoom in and out. Press <Enter> once you are happy with the filer.")
 
@@ -147,6 +148,7 @@ eye.spherical()
 thetas = np.linspace(eye.theta.min(), eye.theta.max(), 100)
 phis = np.linspace(eye.phi.min(), eye.phi.max(), 100)
 
+print("Reducing polar data using a 2d rolling average:")
 avg = []
 for col_num, (t1, t2) in enumerate(zip(thetas[:-1], thetas[1:])):
     col = []
@@ -155,36 +157,71 @@ for col_num, (t1, t2) in enumerate(zip(thetas[:-1], thetas[1:])):
     for row_num, (p1, p2) in enumerate(zip(phis[:-1], phis[1:])):
         in_row = np.logical_and(in_column[:, 1] >= p1, in_column[:, 1] < p2)
         if any(in_row):
-            avg += [np.median(in_column[in_row], axis=0)]
+            avg += [np.mean(in_column[in_row], axis=0)]
     print_progress(col_num, len(thetas) - 1)
 avg = np.array(avg)
 
 # filter outlier points by using bootstraped 95% confidence band (not of the mean)
-l, h = bootstrap_ci(avg[:, 2], reps=1000, ci_range=[2.5, 97.5], stat_func=None)
-l, h = l.mean(), h.mean()
-avg = avg[np.logical_and(avg[:, 2] >= l, avg[:, 2] < h)]
+low, high = np.percentile(avg[:, 2], [.5, 99.5])
+avg = avg[np.logical_and(avg[:, 2] >= low, avg[:, 2] < high)]
 
 t, p, r = avg.T
-tck = interpolate.bisplrep(t, p, r, s=3)
+tmesh, pmesh = np.meshgrid(thetas, phis)
+grid_arr = interpolate.griddata(
+    np.array([t, p]).T,
+    r,
+    np.array([tmesh.ravel(), pmesh.ravel()]).T,
+    'cubic')
+nans = np.isnan(grid_arr)
+grid_arr[nans] = grid_arr[nans == False].mean()
+tck = interpolate.bisplrep(t, p, r)
+rnew = interpolate.bisplev(thetas, phis, tck)
+
+approx_r = []
+for th, ph in zip(eye.theta, eye.phi):
+    approx_r += [interpolate.bisplev(th, ph, tck)]
+approx_r = np.array(approx_r)
+eye.surface = approx_r
+
+arr = avg
+scatter = gl.GLScatterPlotItem(pos=arr, size=5)
+pqt_window.addItem(scatter)
+scatter.scale(1, 1, .01)
+print()
+choice = input("Points within thin sheet around interpolated surface:")
+pqt_window.removeItem(scatter)
+
+arr2 = np.array([tmesh.ravel(), pmesh.ravel(), grid_arr.ravel()]).T
+sheet = gl.GLScatterPlotItem(pos=arr2[nans == False], size=1, color=(0,1,0,1))
+pqt_window.addItem(sheet)
+sheet.scale(1, 1, .01)
+
+scatter2 = gl.GLScatterPlotItem(pos=eye.polar, size=1)
+pqt_window.addItem(scatter2)
+scatter2.scale(1, 1, .01)
+
+choice = input("Polar data with the interpolated surface:")
+pqt_window.removeItem(scatter2)
+pqt_window.removeItem(sheet)
 
 # 3. extract a sheet of points around the approximate surface and use HDBSCAN to segment the crystalline cone centers
-# surface = lut(eye.theta, eye.phi, grid=False)
-surface = []
-for th, ph in zip(eye.theta, eye.phi):
-    surface += [interpolate.bisplev(th, ph, tck)]
-surface = np.array(surface)
+print("Appriximating the cross-sectional surface using our interpolation:")
 
-residuals = eye.radii - surface
-sheet_thickness = np.percentile(abs(residuals), 10)
-low, high = surface - sheet_thickness, surface + sheet_thickness
+residuals = eye.radii - eye.surface
+sheet_thickness = np.percentile(abs(residuals), 20)
+low, high = eye.surface - sheet_thickness, eye.surface + sheet_thickness
 sheet_inds = np.logical_and(eye.radii <= high, eye.radii >= low)
 sheet = eye[sheet_inds]
 
+
+scatter = gl.GLScatterPlotItem(pos=sheet.pts, size=5)
+pqt_window.addItem(scatter)
 np.array([eye.theta[sheet_inds], eye.phi[sheet_inds]]).T
+choice = input("Polar data with the interpolated surface:")
+pqt_window.removeItem(scatter)
 
 clusterer = hdbscan.HDBSCAN(min_cluster_size=3)
 labels = clusterer.fit_predict(sheet.pts)
-
 new_labels = np.array(sorted(set(np.copy(labels))))
 np.random.shuffle(new_labels)
 conv_labels = dict()
@@ -197,7 +234,6 @@ vals = vals + vals.min()
 vals = vals / vals.max()
 c = plt.cm.viridis(vals)
 c[labels < 0, -1] = 0
-# plt.scatter(sheet.theta, sheet.phi, color=c)
 
 coord_centers = []
 polar_centers = []
@@ -399,4 +435,4 @@ pqt_window.addItem(scatter)
 # l_graph2 = gl.GLLinePlotItem(pos=np.array([a2, b2]), color=[0,0,1,1])
 # pqt_window.addItem(l_graph2)
 
-app.exec_()
+# app.exec_()
