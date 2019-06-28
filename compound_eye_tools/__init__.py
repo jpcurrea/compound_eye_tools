@@ -11,6 +11,7 @@ import pandas as pd
 import math
 import pickle
 from numpy import linalg as LA
+from PyQt5.QtWidgets import QWidget, QFileDialog
 
 def load_image(fn):
     return np.asarray(PIL.Image.open(fn))
@@ -106,8 +107,9 @@ def angle_between(v1, v2):
     v2_u = unit_vector(v2)
     return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
 
+
 class Points():
-    """Stores coordinate data in both cartesian and spherical coordinates. 
+    """Stores coordinate data in both cartesian and spherical coordinates.
     It is setup for indexing and is used throughout the pipeline.
     """
     def __init__(self, arr, center_points=True,
@@ -172,23 +174,41 @@ class Points():
     def get_line(self):
         return fit_line(self.pts)
 
-#     def qtscatter(self, colors=None):
-#         if colors is None:
-#             colors = (1, 1, 1, 1)
-        
+filetypes = [
+    ('jpeg images', '*.jpeg *.jpg *.JPEG *.JPG'),
+    ('png images', '*.png *.PNG'),
+    ('tiff images', '*.tiff *.TIFF *.tff *.TFF'),
+    ('bmp images', '*.bmp *.BMP'),
+    ('all types', '*.*')]
 
-# class QTScatter():
-#     """Plots an array of 3d points, size = N x 3 where N is the number of points, 
-#     using a different thread. This is to avoid slowing down calculations by the main thread.
-#     """
-#     def __init__(self, arr, colors):
-#         self.arr = arr
-#         self.colors = colors
+ftypes = [f"{fname} ({ftype})" for (fname, ftype) in filetypes]
+ftypes = ";;".join(ftypes)
 
-#     def qt_thread(self):
-#         self.app = QtGui.QApplication([])
-#         self.pqt_window = gl.GLViewWidget()
-#         self.pqt_window.opts['distance'] = 1000
-#         self.pqt_window.show()
-#         self.pqt_window.setWindowTitle('Eye Viewer')
-        
+class fileSelector(QWidget):
+    """Offers a file selection dialog box with filters based on common image filetypes.
+    """
+    def __init__(self, filetypes=ftypes):
+        super().__init__()
+        self.title = 'Select the images you want to process.'
+        self.left = 10
+        self.top = 10
+        self.width = 640
+        self.height = 480
+        self.filetypes = filetypes
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle(self.title)
+        self.setGeometry(self.left, self.top, self.width, self.height)
+        self.openFileNamesDialog()
+        self.show()
+    
+    def openFileNamesDialog(self):
+        options = QFileDialog.Options()
+        # options |= QFileDialog.DontUseNativeDialog
+        self.files, self.ftype = QFileDialog.getOpenFileNames(
+            self,
+            "QFileDialog.getOpenFileNames()",
+            "",
+            self.filetypes,
+            options=options)

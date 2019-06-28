@@ -1,8 +1,10 @@
 from compound_eye_tools import *
 from pyqtgraph.Qt import QtCore, QtGui
+from PyQt5.QtWidgets import QFileDialog
 from sklearn import cluster
 import pyqtgraph.opengl as gl
 import pyqtgraph as pg
+
 app = QtGui.QApplication([])
 pqt_window = gl.GLViewWidget()
 pqt_window.opts['distance'] = 1000
@@ -14,19 +16,24 @@ print("0. Select the range of densities predominantly in the crystalline cones, 
 # 0a. let user select, from images at different orientations,
 # the range of densities corresponding to the crystalline cones
 folder = "./"
-fns = os.listdir(folder)
-fns = [os.path.join(folder, fn) for fn in fns if fn.endswith(".tif")]
-fns = sorted(fns)
 
+file_dialog = fileSelector()
+fns = file_dialog.files
+ftype = file_dialog.ftype
+fns = sorted(fns)
 zs = len(fns)
 imgs = []
 print("Loading images:\n")
 for num, fn in enumerate(fns):
-    imgs += [load_image(fn)]
+    try:
+        imgs += [load_image(fn)]
+    except:
+        print(f"{fn} failed to load properly.")
     print_progress(num, zs)
     
-arr = np.array(imgs, dtype=np.uint16)
-img = imgs[int(.5*zs)]
+    arr = np.array(imgs, dtype=np.uint16)
+
+assert len(arr) > 0, "All images failed to load."
 
 slide = pg.image(arr)
 slide.setPredefinedGradient('greyclip')
@@ -310,7 +317,6 @@ cone_centers = np.array([cone.pts.mean(0) for cone in cones])
 with open("./cone_clusters.pkl", "rb") as pkl_fn:
     cones = pickle.load(pkl_fn)
 
-
 nearest_neighbors = spatial.KDTree(cone_centers)
 dists, lbls = nearest_neighbors.query(cone_centers, k=13)
 
@@ -373,6 +379,7 @@ cone_cluster_data['anatomical_axis'] = anatomical_vectors.tolist()
 cone_cluster_data['approx_axis'] = approx_vectors.tolist()
 cone_cluster_data['skewness'] = skewness
 cone_cluster_data.to_csv("./cone_cluster_data.csv")
+cone_cluster_data.to_pickle("./cone_cluster_data.pkl")
 
 vals = skewness / skewness.max()
 c = plt.cm.viridis(vals)
