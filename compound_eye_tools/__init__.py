@@ -13,8 +13,10 @@ import pickle
 from numpy import linalg as LA
 from PyQt5.QtWidgets import QWidget, QFileDialog
 
+
 def load_image(fn):
     return np.asarray(PIL.Image.open(fn))
+
 
 def print_progress(part, whole, bar=True):
     prop = float(part)/float(whole)
@@ -28,11 +30,13 @@ def print_progress(part, whole, bar=True):
     sys.stdout.write(st)
     sys.stdout.flush()
 
+
 def fit_line(data, component=0):             # fit 3d line to 3d data
     m = data.mean(0)
     max_val = np.round(2*abs(data - m).max()).astype(int)
     uu, dd, vv = np.linalg.svd(data - m)
     return vv[component]
+
 
 def bootstrap_ci(arr, reps=1000, ci_range=[2.5, 97.5], stat_func=np.mean):
     pseudo_distro = np.random.choice(arr, (len(arr), reps))
@@ -40,6 +44,7 @@ def bootstrap_ci(arr, reps=1000, ci_range=[2.5, 97.5], stat_func=np.mean):
         pseudo_distro = stat_func(pseudo_distro, axis=1)
     l, h = np.percentile(pseudo_distro, ci_range, axis=0)
     return l, h
+
 
 def rotate(arr, theta, axis=0):
     if axis == 0:
@@ -63,6 +68,7 @@ def rotate(arr, theta, axis=0):
     nz = np.squeeze(nz)
     return np.array([nx, ny, nz])
 
+
 def sphereFit(spX, spY, spZ):
     #   Assemble the f matrix
     f = np.zeros((len(spX), 1))
@@ -78,8 +84,9 @@ def sphereFit(spX, spY, spZ):
     radius = math.sqrt(t)
     return radius, np.squeeze(C[:-1]), residuals
 
+
 def cartesian_to_spherical(pts, center=np.array([0, 0, 0])):
-    # theta must be between 
+    # theta must be between
     # TODO: center points based on center of mass
     # TODO: fix boundary problems for trig functions
     pts = pts - center
@@ -89,9 +96,11 @@ def cartesian_to_spherical(pts, center=np.array([0, 0, 0])):
     polar = np.array([theta, phi, radii])
     return polar.T
 
+
 def unit_vector(vector):
     """ Returns the unit vector of the vector.  """
     return vector / np.linalg.norm(vector)
+
 
 def angle_between(v1, v2):
     """ Returns the angle in radians between vectors 'v1' and 'v2'::
@@ -112,6 +121,7 @@ class Points():
     """Stores coordinate data in both cartesian and spherical coordinates.
     It is setup for indexing and is used throughout the pipeline.
     """
+
     def __init__(self, arr, center_points=True,
                  polar=None, spherical_conversion=True,
                  rotate_com=False):
@@ -149,10 +159,10 @@ class Points():
                 # 2. rotate com along x axis (com[0]) until z (com[2]) = 0
                 ang1 = np.arctan2(com[2], com[1])
                 com1 = rotate(com, ang1, axis=0)
-                rot1 = rotate(self.pts.T, ang1, axis=0)
+                rot1 = rotate(self.pts, ang1, axis=0).T
                 # 3. rotate com along z axis (com[2]) until y (com[1]) = 0
                 ang2 = np.arctan2(com1[1], com1[0])
-                rot2 = rotate(rot1.T, ang2, axis=2)
+                rot2 = rotate(rot1, ang2, axis=2).T
                 self.pts = rot2
             # grab spherical coordinates of centered points
             self.spherical()
@@ -174,6 +184,7 @@ class Points():
     def get_line(self):
         return fit_line(self.pts)
 
+
 filetypes = [
     ('jpeg images', '*.jpeg *.jpg *.JPEG *.JPG'),
     ('png images', '*.png *.PNG'),
@@ -184,9 +195,11 @@ filetypes = [
 ftypes = [f"{fname} ({ftype})" for (fname, ftype) in filetypes]
 ftypes = ";;".join(ftypes)
 
+
 class fileSelector(QWidget):
     """Offers a file selection dialog box with filters based on common image filetypes.
     """
+
     def __init__(self, filetypes=ftypes):
         super().__init__()
         self.title = 'Select the images you want to process.'
@@ -202,7 +215,7 @@ class fileSelector(QWidget):
         self.setGeometry(self.left, self.top, self.width, self.height)
         self.openFileNamesDialog()
         self.show()
-    
+
     def openFileNamesDialog(self):
         options = QFileDialog.Options()
         # options |= QFileDialog.DontUseNativeDialog
