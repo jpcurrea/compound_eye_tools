@@ -11,14 +11,22 @@ import pandas as pd
 import math
 import pickle
 from numpy import linalg as LA
-from PyQt5.QtWidgets import QWidget, QFileDialog
+
+from PyQt5.QtWidgets import QWidget, QFileDialog, QApplication
+from pyqtgraph.Qt import QtCore, QtGui
+from PyQt5.QtWidgets import QFileDialog
+from sklearn import cluster
+import pyqtgraph.opengl as gl
+import pyqtgraph as pg
 
 
 def load_image(fn):
+    """Import an image as a numpy array using the PIL."""
     return np.asarray(PIL.Image.open(fn))
 
 
 def print_progress(part, whole, bar=True):
+    """Print the part/whole progress bar."""
     prop = float(part)/float(whole)
     sys.stdout.write('\r')
     # sys.stdout.write("[%-20s] %d%%" % ("="*int(20*prop), round(100)*prop))
@@ -32,6 +40,14 @@ def print_progress(part, whole, bar=True):
 
 
 def fit_line(data, component=0):             # fit 3d line to 3d data
+    """Use singular value decomposition (SVD) to find the best fitting vector to the data. 
+
+
+    Keyword arguments:
+    data -- input data points
+    component -- the order of the axis used to decompose the data (default 0 => the first component vector which represents the plurality of the data
+    """
+
     m = data.mean(0)
     max_val = np.round(2*abs(data - m).max()).astype(int)
     uu, dd, vv = np.linalg.svd(data - m)
@@ -39,6 +55,15 @@ def fit_line(data, component=0):             # fit 3d line to 3d data
 
 
 def bootstrap_ci(arr, reps=1000, ci_range=[2.5, 97.5], stat_func=np.mean):
+    """Use bootstrapping to generate a percentile range for a given statistic.
+
+
+    Keyword arguments:
+    arr -- input arr, preferably a numpy array
+    reps -- the number of iterations for the bootstrap
+    ci_range -- the percentile range to output
+    stat_func -- the statistic to apply to the bootstrap (for instance, mean => 95% CI for the mean; std => 95% CI for the std; etc.)
+    """
     pseudo_distro = np.random.choice(arr, (len(arr), reps))
     if stat_func is not None:
         pseudo_distro = stat_func(pseudo_distro, axis=1)
@@ -47,6 +72,7 @@ def bootstrap_ci(arr, reps=1000, ci_range=[2.5, 97.5], stat_func=np.mean):
 
 
 def rotate(arr, theta, axis=0):
+    """Generate a rotation matrix and rotate input array along a single axis."""
     if axis == 0:
         rot_matrix = np.array(
             [[1, 0, 0],
@@ -70,7 +96,7 @@ def rotate(arr, theta, axis=0):
 
 
 def sphereFit(spX, spY, spZ):
-    #   Assemble the f matrix
+    """Find best fitting sphere to x, y, and z coordinates using OLS."""
     f = np.zeros((len(spX), 1))
     f[:, 0] = (spX**2) + (spY**2) + (spZ**2)
     A = np.zeros((len(spX), 4))
@@ -86,9 +112,7 @@ def sphereFit(spX, spY, spZ):
 
 
 def cartesian_to_spherical(pts, center=np.array([0, 0, 0])):
-    # theta must be between
-    # TODO: center points based on center of mass
-    # TODO: fix boundary problems for trig functions
+    """Convert rectangular/cartesian to spherical coordinates."""
     pts = pts - center
     radii = LA.norm(np.copy(pts), axis=1)
     theta = np.arccos(np.copy(pts)[:, 2]/radii)
@@ -119,7 +143,13 @@ def angle_between(v1, v2):
 
 class Points():
     """Stores coordinate data in both cartesian and spherical coordinates.
-    It is setup for indexing and is used throughout the pipeline.
+
+
+    Keyword arguments:
+    center_points -- True => subtract out the center of mass (default True)
+    polar -- if array of polar values are supplied, use them (default None)
+    spherical_conversion -- True => use arr to calculate spherical coordinates (default True)
+    rotate_com -- True => rotate points until center of mass is entirely located on the Z axis (default False)
     """
 
     def __init__(self, arr, center_points=True,
@@ -188,7 +218,7 @@ class Points():
 filetypes = [
     ('jpeg images', '*.jpeg *.jpg *.JPEG *.JPG'),
     ('png images', '*.png *.PNG'),
-    ('tiff images', '*.tiff *.TIFF *.tff *.TFF'),
+    ('tiff images', '*.tiff *.TIFF *.tff *.TFF *.tif *.TIF'),
     ('bmp images', '*.bmp *.BMP'),
     ('all types', '*.*')]
 
@@ -197,8 +227,7 @@ ftypes = ";;".join(ftypes)
 
 
 class fileSelector(QWidget):
-    """Offers a file selection dialog box with filters based on common image filetypes.
-    """
+    """Offer a file selection dialog box filtering common image filetypes."""
 
     def __init__(self, filetypes=ftypes):
         super().__init__()
@@ -225,3 +254,189 @@ class fileSelector(QWidget):
             "",
             self.filetypes,
             options=options)
+
+
+class stackFilter():
+    """Import image filenames filter images using upper and lower contrast bounds."""
+
+    def __init__(self, fns=os.listdir("./"), save_coordinates=True, app=None,
+                 save_fn="./filtered_data.npy"):
+        """Import images using fns, a list of filenames."""
+        self.save_fn = save_fn
+        self.app = app
+        self.fns = fns
+        self.save = save_coordinates
+        imgs = []
+        print("Loading images:\n")
+        for num, fn in enumerate(fns):
+            try:
+                imgs += [load_image(fn)]
+            except:
+                print(f"{fn} failed to load.")
+            print_progress(num, len(fns))
+
+        assert len(imgs) > 0, "All images failed to load."
+        self.imgs = np.array(imgs, dtype=np.uint16)
+
+    def contrast_filter(self):
+        """Use pyqtgraph's image UI to select lower an upper bound contrasts."""
+        # if there is no defined application instance, make one
+        if self.app is None:
+            self.app = QApplication.instance()
+            if self.app is None:
+                self.app = QApplication([])
+
+        self.image_UI = pg.image(self.imgs)  # use the image UI from pyqtgraph
+        self.image_UI.setPredefinedGradient('greyclip')
+        self.app.exec_()      # allow the application to run until closed
+        # grab low and high bounds from UI
+        self.low, self.high = self.image_UI.getLevels()
+        xs = np.array([], dtype='uint16')
+        ys = np.array([], dtype='uint16')
+        zs = np.array([], dtype='uint16')
+
+        print("Extracting coordinate data: ")
+        for depth, img in enumerate(self.imgs):
+            y, x = np.where(
+                np.logical_and(img <= self.high, img >= self.low))
+            # y, x = np.where(image > 0)
+            z = np.repeat(depth, len(x))
+            xs = np.append(xs, x)
+            ys = np.append(ys, y)
+            zs = np.append(zs, z)
+            print_progress(depth + 1, len(self.imgs))
+            print("./")
+
+        self.arr = np.array([xs, ys, zs], dtype=np.uint16).T
+        if self.save:
+            print(f"Saving coordinates to {self.save_fn}")
+            np.save(self.save_fn, self.arr)
+
+
+class ScatterPlot3d():
+    """Plot 3d datapoints using pyqtgraph's GLScatterPlotItem."""
+
+    def __init__(self, arr, color=(1, 1, 1, 1), size=1, app=None, window=None):
+        self.arr = arr
+        self.color = color
+        self.size = size
+        self.app = app
+        self.window = window
+
+        self.n, self.dim = self.arr.shape
+        assert self.dim == 3, ("Input array should have shape "
+                               "N x 3. Instead it has "
+                               "shape {} x {}.".format(
+                                   self.n,
+                                   self.dim))
+
+    def show(self):
+        if self.app is None:
+            self.app = QApplication.instance()
+            if self.app is None:
+                self.app = QApplication([])
+        if self.window is None:
+            self.window = gl.GLViewWidget()
+            self.window.setWindowTitle("3D Scatter Plot")
+        self.scatter_GUI = gl.GLScatterPlotItem(
+            pos=self.arr, size=self.size, color=self.color)
+        self.window.addItem(self.scatter_GUI)
+        self.window.show()
+        self.app.exec_()
+
+
+class ScatterPlot2d():
+    """Plot 3d datapoints using pyqtgraph's GLScatterPlotItem."""
+
+    # def __init__(self, arr, color=(1, 1, 1, 1), size=[1], app=None, window=None):
+    def __init__(self, arr, color=[1], app=None, window=None, axis=None):
+        self.arr = np.array(arr)
+        self.color = np.array(color)
+        # self.size = np.array(size)
+        self.app = app
+        self.window = window
+        self.axis = axis
+
+        self.n, self.dim = self.arr.shape
+        assert self.dim == 2, ("Input array should have shape "
+                               "N x 2. Instead it has "
+                               "shape {} x {}.".format(
+                                   self.n,
+                                   self.dim))
+        # assert len(self.color) in [self.n, 1], (
+        #     "Input color array should have length 1 or N. Instead it has "
+        #     "shape {}.".format(self.color.shape))
+        if len(self.color) == 1:
+            color = pg.intColor(self.color[0])
+            # color = [[self.color
+            self.color = np.repeat(color, self.n)
+        if len(self.color) == 4:
+            self.color = np.repeat([self.color], self.n)
+        # if len(self.size) != self.n:
+        #     self.color = np.repeat(self.size, self.n)
+
+    def show(self):
+        if self.app is None:
+            self.app = QApplication.instance()
+            if self.app is None:
+                self.app = QApplication([])
+        if self.window is None:
+            self.window = pg.GraphicsLayoutWidget()
+            self.window.setWindowTitle("2D Scatter Plot")
+        if self.axis is None:
+            self.axis = self.window.addPlot()
+        self.scatter_GUI = pg.ScatterPlotItem(
+            # pos=self.arr, size=self.size, color=self.color)
+            pos=self.arr, color=self.color)
+        spots = []
+        # for pos, size, color in zip(self.arr, self.size, self.color):
+        for pos, color in zip(self.arr, self.color):
+            spots.append({
+                'pos': pos,
+                # 'size': size,
+                'pen': {'color': 'w'},
+                'brush': color})
+        self.scatter_GUI.addPoints(spots)
+        self.axis.addItem(self.scatter_GUI)
+        self.window.show()
+        self.app.exec_()
+
+
+def main():
+    app = QApplication([])
+    # file_UI = fileSelector()
+    # file_UI.close()
+    # fns = file_UI.files
+
+    folder = "/home/pbl/Desktop/programs/ommatidia_counter/bombus/morphosourceMedia_03_13_19_164700/LU_3_14_AM_F_5_M35381-65646_Apis_mellifera_Scan_60185/60185/test_bee_eye/cleaned_up/"
+    os.chdir(folder)
+    # testing:
+    # fns = os.listdir("./")
+    # fns = sorted([os.path.join(folder, fn)
+    #               for fn in fns if fn.endswith(".tif")])
+
+    # SF = stackFilter(fns, app=app)
+    # SF.contrast_filter()
+    # arr = SF.arr
+
+    arr = np.load("./filtered_data.npy")  # testing
+    arr = arr - arr.mean(0)
+    arr = Points(arr, center_points=True, rotate_com=True)
+    # scatter = ScatterPlot3d(arr.pts)          # testing
+    # scatter.show()
+
+    # polar_vals = arr.polar
+    # polar_vals[:, 2] /= 100
+    # polar = ScatterPlot3d(arr.polar)          # testing
+    # polar.show()
+
+    scatter = ScatterPlot2d(arr.polar[:, :2])
+    scatter.show()
+
+    return arr
+
+
+scatter = main()
+
+if __name__ == "__main__":
+    main()
