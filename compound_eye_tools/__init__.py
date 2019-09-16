@@ -1,6 +1,7 @@
+import pdb
 from matplotlib import pyplot as plt
 from matplotlib import colors
-from scipy import spatial, interpolate
+from scipy import spatial, interpolate, ndimage
 import numpy as np
 import hdbscan
 import PIL
@@ -18,6 +19,8 @@ from PyQt5.QtWidgets import QFileDialog
 from sklearn import cluster
 import pyqtgraph.opengl as gl
 import pyqtgraph as pg
+
+import fly_eye as fe
 
 
 def load_image(fn):
@@ -40,7 +43,7 @@ def print_progress(part, whole, bar=True):
 
 
 def fit_line(data, component=0):             # fit 3d line to 3d data
-    """Use singular value decomposition (SVD) to find the best fitting vector to the data. 
+    """Use singular value decomposition (SVD) to find the best fitting vector to the data.
 
 
     Keyword arguments:
@@ -141,6 +144,32 @@ def angle_between(v1, v2):
     return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
 
 
+def angle_between_skew_vectors(
+        position_vector_1, direction_vector_1,
+        position_vector_2, direction_vector_2):
+    """uses derivation from 
+    https://en.wikipedia.org/wiki/Skew_lines#Nearest_Points
+    """
+    p1, d1 = position_vector_1, direction_vector_1
+    p2, d2 = position_vector_2, direction_vector_2
+    n = np.cross(d1, d2)
+    n1, n2 = np.cross(d1, n), np.cross(d2, n)
+    c1 = p1 + np.dot((np.dot((p2 - p1), n2)/(np.dot(d1, n2))), d1)
+    c2 = p2 + np.dot((np.dot((p1 - p2), n1)/(np.dot(d2, n1))), d2)
+    midpoint = np.mean([c1, c2], axis=0)
+    centered_p1, centered_p2 = p1 - midpoint, p2 - midpoint
+    c1, c2 = centered_p1, centered_p2
+    theta = np.arccos(
+        np.dot(c1, c2)/(LA.norm(c1) * LA.norm(c2)))
+    return theta
+
+
+def load_Points(fn):
+    with open(fn, "rb") as pickle_file:
+        out = pickle.load(pickle_file)
+    return out
+
+
 class Points():
     """Stores coordinate data in both cartesian and spherical coordinates.
 
@@ -149,12 +178,13 @@ class Points():
     center_points -- True => subtract out the center of mass (default True)
     polar -- if array of polar values are supplied, use them (default None)
     spherical_conversion -- True => use arr to calculate spherical coordinates (default True)
-    rotate_com -- True => rotate points until center of mass is entirely located on the Z axis (default False)
+    rotate_com -- True => rotate points until center of mass is entirely located on the Z axis
+    (default False)
     """
 
     def __init__(self, arr, center_points=True,
                  polar=None, spherical_conversion=True,
-                 rotate_com=False):
+                 rotate_com=True):
         self.pts = np.array(arr)
         if arr.ndim > 1:
             assert self.pts.shape[1] == 3, ("Input array should have shape "
@@ -168,6 +198,7 @@ class Points():
                                             "shape {}.".format(
                                                 self.pts.shape))
             self.pts = self.pts.reshape((1, -1))
+        self.original_pts = self.pts
         self.shape = self.pts.shape
         self.center = np.array([0, 0, 0])
         self.polar = None
@@ -202,7 +233,7 @@ class Points():
         return len(self.x)
 
     def __getitem__(self, key):
-        out = Points(self.pts[key], polar=self.polar[key], center_points=False)
+        out = Points(self.pts[key], polar=self.polar[key])
         return out
 
     def spherical(self, center=None):
@@ -213,6 +244,93 @@ class Points():
 
     def get_line(self):
         return fit_line(self.pts)
+
+    def rasterize(self, mode='polar', axes=[0, 1], pixel_length=.01):
+        """Rasterize float coordinates in to a grid defined by min and max vals
+        and sampled at pixel_length.
+        """
+        if mode == 'pts':
+            arr = self.pts
+        if mode == 'polar':
+            arr = self.polar
+        x, y, z = arr.T
+
+        xs = np.arange(x.min(), x.max(), pixel_length)
+        ys = np.arange(y.min(), y.max(), pixel_length)
+
+        avg = []
+        for col_num, (x1, x2) in enumerate(zip(xs[:-1], xs[1:])):
+            col = []
+            in_column = np.logical_and(x >= x1, x < x2)
+            in_column = arr[in_column]
+            for row_num, (y1, y2) in enumerate(zip(ys[:-1], ys[1:])):
+                in_row = np.logical_and(
+                    in_column[:, 1] >= y1, in_column[:, 1] < y2)
+                avg += [in_row.sum()]
+            print_progress(col_num, len(xs) - 1)
+        avg = np.array(avg)
+        avg = avg.reshape((len(xs) - 1, len(ys) - 1))
+        self.raster = avg
+        xs = xs[:-1] + (pixel_length / 2.)
+        ys = ys[:-1] + (pixel_length / 2.)
+        return self.raster, (xs, ys)
+
+    def fit_surface(self, mode='polar', outcome_axis=0, pixel_length=.01):
+        """Find cubic interpolation surface of one axis using the other two."""
+        if mode == 'pts':
+            arr = self.pts
+        if mode == 'polar':
+            arr = self.polar
+        x, y, z = arr.T
+
+        # reduce data using a 2D rolling average
+        xs = np.arange(x.min(), x.max(), pixel_length)
+        ys = np.arange(y.min(), y.max(), pixel_length)
+        avg = []
+        for col_num, (x1, x2) in enumerate(zip(xs[:-1], xs[1:])):
+            col = []
+            in_column = np.logical_and(x >= x1, x < x2)
+            in_column = arr[in_column]
+            for row_num, (y1, y2) in enumerate(zip(ys[:-1], ys[1:])):
+                in_row = np.logical_and(
+                    in_column[:, 1] >= y1, in_column[:, 1] < y2)
+                if any(in_row):
+                    avg += [np.mean(in_column[in_row], axis=0)]
+            print_progress(col_num, len(xs) - 1)
+        avg = np.array(avg)
+
+        # filter outlier points by using bootstraped 95% confidence band (not of the mean)
+        low, high = np.percentile(avg[:, 2], [.5, 99.5])
+        avg = avg[np.logical_and(avg[:, 2] >= low, avg[:, 2] < high)]
+        avg_x, avg_y, avg_z = avg.T
+
+        # interpolate through avg to get 'cross section' using
+        # bivariate spline (bisplrep)
+        tck = interpolate.bisplrep(avg_x, avg_y, avg_z)
+        z_new = []
+        for xx, yy in zip(x, y):
+            z_new += [interpolate.bisplev(xx, yy, tck)]
+        self.surface = np.array(z_new)
+
+    def get_polar_cross_section(self, thickness=.1, pixel_length=.01):
+        """Find best fitting surface of radii using phis and thetas."""
+        self.fit_surface(mode='polar', pixel_length=pixel_length)
+        # find distance of datapoints from surface (ie. residuals)
+        self.residuals = self.radii - self.surface
+        # choose points within 'thickness' proportion of residuals
+        self.cross_section_thickness = np.percentile(
+            abs(self.residuals), thickness * 100)
+        self.surface_lower_bound = self.surface - self.cross_section_thickness
+        self.surface_upper_bound = self.surface + self.cross_section_thickness
+        cross_section_inds = np.logical_and(
+            self.radii <= self.surface_upper_bound,
+            self.radii > self.surface_lower_bound)
+        self.cross_section = self[cross_section_inds]
+
+    def save(self, fn):
+        """Save using pickle."""
+        with open(fn, "wb") as pickle_file:
+            pickle.dump(self, pickle_file)
 
 
 filetypes = [
@@ -259,13 +377,10 @@ class fileSelector(QWidget):
 class stackFilter():
     """Import image filenames filter images using upper and lower contrast bounds."""
 
-    def __init__(self, fns=os.listdir("./"), save_coordinates=True, app=None,
-                 save_fn="./filtered_data.npy"):
+    def __init__(self, fns=os.listdir("./"), app=None):
         """Import images using fns, a list of filenames."""
-        self.save_fn = save_fn
         self.app = app
         self.fns = fns
-        self.save = save_coordinates
         imgs = []
         print("Loading images:\n")
         for num, fn in enumerate(fns):
@@ -305,20 +420,18 @@ class stackFilter():
             ys = np.append(ys, y)
             zs = np.append(zs, z)
             print_progress(depth + 1, len(self.imgs))
-            print("./")
 
         self.arr = np.array([xs, ys, zs], dtype=np.uint16).T
-        if self.save:
-            print(f"Saving coordinates to {self.save_fn}")
-            np.save(self.save_fn, self.arr)
 
 
 class ScatterPlot3d():
     """Plot 3d datapoints using pyqtgraph's GLScatterPlotItem."""
 
-    def __init__(self, arr, color=(1, 1, 1, 1), size=1, app=None, window=None):
+    def __init__(self, arr, color=None, size=1, app=None, window=None,
+                 colorvals=None, cmap=plt.cm.viridis):
         self.arr = arr
         self.color = color
+        self.cmap = cmap
         self.size = size
         self.app = app
         self.window = window
@@ -329,8 +442,20 @@ class ScatterPlot3d():
                                "shape {} x {}.".format(
                                    self.n,
                                    self.dim))
+        if isinstance(self.color, (tuple, list)):
+            self.color = np.array(self.color)
+        if self.color is None and colorvals is None:
+            colorvals = np.ones(self.arr.shape[0])
+        if self.color is None and colorvals is not None:
+            colorvals = (colorvals - colorvals.min()) / \
+                (colorvals.max() - colorvals.min())
+            self.color = np.array([self.cmap(c) for c in colorvals])
+        if self.color.max() > 1:
+            self.color = self.color / self.color.max()
 
-    def show(self):
+        self.plot()
+
+    def plot(self):
         if self.app is None:
             self.app = QApplication.instance()
             if self.app is None:
@@ -341,21 +466,27 @@ class ScatterPlot3d():
         self.scatter_GUI = gl.GLScatterPlotItem(
             pos=self.arr, size=self.size, color=self.color)
         self.window.addItem(self.scatter_GUI)
+
+    def show(self):
         self.window.show()
         self.app.exec_()
 
 
 class ScatterPlot2d():
-    """Plot 3d datapoints using pyqtgraph's GLScatterPlotItem."""
+    """Plot 2d datapoints using pyqtgraph's GLScatterPlotItem."""
 
     # def __init__(self, arr, color=(1, 1, 1, 1), size=[1], app=None, window=None):
-    def __init__(self, arr, color=[1], app=None, window=None, axis=None):
+    def __init__(self, arr, color=None, app=None, window=None, size=1,
+                 axis=None, colorvals=None, cmap=plt.cm.viridis, scatter_GUI=None):
         self.arr = np.array(arr)
-        self.color = np.array(color)
-        # self.size = np.array(size)
+        self.color = color
+        self.colorvals = colorvals
+        self.cmap = cmap
+        self.size = size
         self.app = app
         self.window = window
         self.axis = axis
+        self.scatter_GUI = scatter_GUI
 
         self.n, self.dim = self.arr.shape
         assert self.dim == 2, ("Input array should have shape "
@@ -363,17 +494,45 @@ class ScatterPlot2d():
                                "shape {} x {}.".format(
                                    self.n,
                                    self.dim))
-        # assert len(self.color) in [self.n, 1], (
-        #     "Input color array should have length 1 or N. Instead it has "
-        #     "shape {}.".format(self.color.shape))
-        if len(self.color) == 1:
-            color = pg.intColor(self.color[0])
-            # color = [[self.color
-            self.color = np.repeat(color, self.n)
-        if len(self.color) == 4:
+        # how to handle color array:
+        # if float or int, repeat float/int and convert to pg.intColor
+
+        if self.colorvals is None and self.color is None:
+            self.color = np.repeat(pg.intColor(1), len(self.arr))
+
+        if self.color is None and self.colorvals is not None:
+            assert len(self.colorvals) == len(self.arr), (
+                "Colorvals array is of the wrong length."
+                f" Array should have length {len(self.arr)},"
+                f" but is {len(self.colorvals)}.")
+            if max(self.colorvals) > 255 or max(self.colorvals) <= 1:
+                self.colorvals = (self.colorvals - self.colorvals.min()) / \
+                    (self.colorvals.max() - self.colorvals.min())
+                self.color = 255 * np.array([self.cmap(c)
+                                             for c in self.colorvals])
+
+        elif isinstance(self.color, (float, int)):
+            self.color = np.repeat(self.color, len(self.arr))
+            self.color = np.array(self.color)
+
+        elif isinstance(self.color, (list, tuple, np.ndarray)):
+            assert len(self.color) in [len(self.arr), 1], (
+                "Color array is of the wrong length."
+                f" Array should have length of 1 or {len(self.arr)},"
+                f" but is {len(self.color)}.")
+            self.color = np.array(self.color)
+
+        if self.color.ndim > 1:
+            if self.color.shape[1] != 4:
+                color = []
+                for c in self.color:
+                    color += [pg.intColor(c[0])]
+                self.color = np.array(color)
+        elif len(self.color) == 4:
             self.color = np.repeat([self.color], self.n)
-        # if len(self.size) != self.n:
-        #     self.color = np.repeat(self.size, self.n)
+
+        if isinstance(self.size, (float, int)):
+            self.size = np.repeat(self.size, self.n)
 
     def show(self):
         if self.app is None:
@@ -385,58 +544,453 @@ class ScatterPlot2d():
             self.window.setWindowTitle("2D Scatter Plot")
         if self.axis is None:
             self.axis = self.window.addPlot()
-        self.scatter_GUI = pg.ScatterPlotItem(
-            # pos=self.arr, size=self.size, color=self.color)
-            pos=self.arr, color=self.color)
+        if self.scatter_GUI is None:
+            self.scatter_GUI = pg.ScatterPlotItem()
+        # pos=self.arr, size=self.size, color=self.color)
+        # pos=self.arr, color=)
         spots = []
         # for pos, size, color in zip(self.arr, self.size, self.color):
-        for pos, color in zip(self.arr, self.color):
-            spots.append({
-                'pos': pos,
-                # 'size': size,
-                'pen': {'color': 'w'},
-                'brush': color})
+
+        for pos, color, size in zip(self.arr, self.color, self.size):
+            if isinstance(color, np.ndarray):
+                assert len(color) == 4, (
+                    f"Color array imported poorly. Each element should have length 4.")
+                spots.append({
+                    'pos': pos,
+                    'size': size,
+                    'pen': None,
+                    'brush': pg.mkBrush(color[0], color[1], color[2], color[3])})
+            else:
+                spots.append({
+                    'pos': pos,
+                    'size': size,
+                    'pen': None,
+                    'brush': pg.mkBrush(color)})
         self.scatter_GUI.addPoints(spots)
         self.axis.addItem(self.scatter_GUI)
         self.window.show()
         self.app.exec_()
 
 
+def filter_and_preview_images(fns):
+    # use stackFilter GUI to filter the stack of images based on contrast values
+    SF = stackFilter(fns)
+    SF.contrast_filter()
+    eye = SF.arr
+    # 1. convert to spherical coordinates by fitting a sphere with OLS
+    # center the points around the mean
+    eye = eye - eye.mean(0)
+    # eye = np.round(eye)
+    # use Points class to fit a sphere and convert to spherical coordinates, and
+    eye = Points(eye, center_points=True, rotate_com=True)
+    return eye
+
+
 def main():
+    # make a QApplication for the pyqt GUI
     app = QApplication([])
-    # file_UI = fileSelector()
-    # file_UI.close()
-    # fns = file_UI.files
+    # TODO: main menu with buttons for different steps.
+    # what follows is a typical pipeline
+    # if user wants to skip ahead, they have to load a particular kind of file
 
-    folder = "/home/pbl/Desktop/programs/ommatidia_counter/bombus/morphosourceMedia_03_13_19_164700/LU_3_14_AM_F_5_M35381-65646_Apis_mellifera_Scan_60185/60185/test_bee_eye/cleaned_up/"
-    os.chdir(folder)
-    # testing:
-    # fns = os.listdir("./")
-    # fns = sorted([os.path.join(folder, fn)
-    #               for fn in fns if fn.endswith(".tif")])
+    # make a UI that checks for saved files for coordinates, cross_section, etc.
+    filenames = [
+        "eye_coordinates_Points.pkl",
+        "eye_cross_section.pkl",
+        "eye_cross_section_image.pkl",
+        "eye_crystalline_cone_clusters.pkl",
+        "eye_cone_cluster_data.csv"
+    ]
 
-    # SF = stackFilter(fns, app=app)
-    # SF.contrast_filter()
-    # arr = SF.arr
+    # 0. import files and use GUI to get the images to filter the stack of images
+    file_UI = fileSelector()
+    file_UI.close()
+    fns = file_UI.files
+    folder = os.path.dirname(fns[0])
+    filenames = [os.path.join(folder, fn) for fn in filenames]
+    other_files = os.listdir(folder)
+    other_files = [fn for fn in other_files if fn not in fns]
+    other_files = [os.path.join(folder, fn) for fn in other_files]
+    # use stackFilter GUI to filter the stack of images based on contrast values
+    save = False
+    while save is False:
+        eye = None
+        if filenames[0] in other_files:
+            load_file = input(f"{filenames[0]} was found in the current folder. "
+                              "Would you like to load this coordinates file? Press <1>"
+                              " for yes or <0> for no.")
+            if load_file in ["1", "y", "yes"]:
+                eye = load_Points(filenames[0])
+            else:
+                os.remove(filenames[0])
+                other_files.remove(filenames[0])
+        if eye is None:
+            eye = filter_and_preview_images(fns)
+        # 3d scatter plot of the included coordinates
+        # scatter = ScatterPlot3d(eye.pts)
+        # scatter.show()
+        response = input("Save and continue? Press <1> for yes or <0> to load "
+                         "and filter the images again?")
+        if response in ["1", "y", "yes"]:
+            save = True
+    eye.save(filenames[0])
 
-    arr = np.load("./filtered_data.npy")  # testing
-    arr = arr - arr.mean(0)
-    arr = Points(arr, center_points=True, rotate_com=True)
-    # scatter = ScatterPlot3d(arr.pts)          # testing
-    # scatter.show()
+    # 2. get approximate cross section of the points in spherical coordinates
+    save = False
+    thickness = .7
+    while save is False:
+        cross_section = None
+        if filenames[1] in other_files:
+            load_file = input(f"{filenames[1]} was found in the current folder. "
+                              "Would you like to load this cross section file? Press <1>"
+                              " for yes or <0> for no.")
+            if load_file in ["1", "y", "yes"]:
+                cross_section = load_Points(filenames[1])
+            else:
+                os.remove(filenames[1])
+                other_files.remove(filenames[1])
+        if cross_section is None:
+            eye.get_polar_cross_section(thickness=thickness)
+            cross_section = eye.cross_section
+        # scatter = ScatterPlot2d(cross_section.polar[:, :2],
+        #                         colorvals=cross_section.radii)
+        # scatter.show()
+        response = input("Save and continue? Press <1> for yes or <0> to extract "
+                         "the cross section using a different thickness?")
+        if response in ["1", "y", "yes"]:
+            save = True
+        else:
+            thickness = input("What proportion of thickness (between 0 and 1) should "
+                              "we use?")
+            success = False
+            while success is False:
+                try:
+                    thickness = float(thickness)
+                    success = thickness <= 1 and thickness > 0
+                except:
+                    thickness = input(
+                        "the response must be a number between 0 and 1")
+    cross_section.save(filenames[1])
 
-    # polar_vals = arr.polar
-    # polar_vals[:, 2] /= 100
-    # polar = ScatterPlot3d(arr.polar)          # testing
-    # polar.show()
+    save = False
+    pixel_length = .001
+    while save is False:
+        cross_section_eye = None
+        if filenames[2] in other_files:
+            load_file = input(f"{filenames[2]} was found in the current folder."
+                              "Would you like to load this file? Press <1>"
+                              " for yes or <0> for no.")
+            if load_file in ["1", "y", "yes"]:
+                # cross_section_eye = load_image(filenames[2])
+                cross_section_eye = load_Points(filenames[2])
+                img = cross_section_eye.image
+            else:
+                os.remove(filenames[2])
+                other_files.remove(filenames[2])
+        if cross_section_eye is None:
+            img, (xvals, yvals) = cross_section.rasterize(
+                pixel_length=pixel_length)
+            # 3. use low pass filter method from Eye object in fly_eye to find centers
+            # of cone clusters/ommatidia.
+            # a. rasterize the image so that we can use our image processing algorithm in fly_eye
+            cross_section_eye = fe.Eye(img, pixel_size=pixel_length)
+            cross_section_eye.xvals, cross_section_eye.yvals = xvals, yvals
+            # dilated = ndimage.morphology.binary_dilation(
+            #     img, iterations=20).astype('uint8')
+            # # b. make an approximate mask using the lower and upper bounds per column
+            # mask = np.zeros(img.shape, dtype=bool)
+            mask = img != 0
+            mask = ndimage.binary_dilation(mask, iterations=2)
+            # for col, col_vals in enumerate(dilated):
+            #     inds = np.where(col_vals)[0]
+            #     if inds.sum() > 0:
+            #         first, last = inds.min(), inds.max()
+            #         mask[col, first: last + 1] = True
+        mask = img != 0
+        mask = ndimage.binary_dilation(mask, iterations=2)
+        pg.image(img)
+        app.exec_()
+        response = input("Save and continue? Press <1> for yes or <0> to rasterize "
+                         "the image using a different pixel length?")
+        if response in ["1", "y", "yes"]:
+            save = True
+        else:
+            pixel_length = input("What pixel length should we use?")
+            success = False
+            while success is False:
+                try:
+                    pixel_length = float(thickness)
+                except:
+                    pixel_length = input("the response must be a number")
 
-    scatter = ScatterPlot2d(arr.polar[:, :2])
-    scatter.show()
+    with open(filenames[2], 'wb') as image_pkl:
+        pickle.dump(cross_section_eye, image_pkl)
 
-    return arr
+    if cross_section_eye.ommatidia is None:
+        # c. use low pass algorithm from fly_eye on the rasterized image
+        cross_section_eye.get_ommatidia(mask=mask, max_facets=2000)
+    ys, xs = cross_section_eye.ommatidia
+    # recenter the points
+    ommatidia = np.array(
+        [xs + cross_section_eye.xvals.min(),
+         ys + cross_section_eye.yvals.min()]).T
 
+    # 4. find points around these crystalline cone approximate centers
+    # a. use distance tree to find cross section coordinates closest to the centers
+    # pdb.set_trace()
+    tree = spatial.KDTree(ommatidia)
+    dists, inds = tree.query(cross_section.polar[:, :2])
+    # b. include only those centers that have at least one nearest neighbor
+    included = sorted(set(inds))
+    ommatidia = ommatidia[included]
 
-scatter = main()
+    # c. convert to the original euclidean space
+    cluster_centers = []
+    for ind in sorted(set(inds)):
+        cluster_ = cross_section.original_pts[inds == ind]
+        cluster_centers += [cluster_.mean(0)]
+    cluster_centers = np.array(cluster_centers).astype('float16')
+    # d. now, find clusters within the total dataset nearest the converted centers
+    # using the K-means algorithm
+    save = False
+    clusters = None
+    while save is False:
+        if filenames[3] in other_files:
+            load_file = input(f"{filenames[3]} was found in the current folder."
+                              "Would you like to load this file? Press <1>"
+                              " for yes or <0> for no.")
+            if load_file in ["1", "y", "yes"]:
+                with open(filenames[3], 'rb') as cluster_file:
+                    clusters = pickle.load(cluster_file)
+            else:
+                os.remove(filenames[3])
+                other_files.remove(filenames[3])
+        if clusters is None:
+            pts = np.round(eye.pts).astype(np.int16)
+            cluster_centers = np.round(cluster_centers).astype(np.int16)
+            clusterer = cluster.KMeans(n_clusters=len(
+                cluster_centers), init=cluster_centers).fit(pts)
+            groups = clusterer.labels_
+            clusters = []
+            for group in sorted(set(groups)):
+                ind = group == groups
+                cone = Points(eye.pts[ind], polar=eye.polar[ind],
+                              center_points=False, rotate_com=False)
+                clusters += [cone]
+        # scatter_centers = ScatterPlot3d(
+        #     cluster_centers,
+        #     size=10,
+        # )
+        random_groups = np.random.permutation(sorted(set(groups)))
+        colorvals = np.copy(groups)
+        colorvals = np.array([random_groups[colorval]
+                              for colorval in colorvals])
+        # scatter_clusters = ScatterPlot3d(
+        #     eye.pts,
+        #     colorvals=colorvals,
+        #     cmap=plt.cm.hsv
+        # )
+        # scatter_clusters.show()
+        # scatter_clusters = ScatterPlot2d(
+        #     eye.polar[:, :2],
+        #     colorvals=colorvals,
+        #     cmap=plt.cm.plasma
+        # )
+        # scatter_centers = ScatterPlot2d(
+        #     ommatidia,
+        #     size=10,
+        #     window=scatter_clusters.window,
+        # )
+        # scatter_clusters.show()
+        # scatter_centers = ScatterPlot2d(
+        #     ommatidia,
+        #     size=10,
+        # )
+        # scatter_centers.show()
+        # scatters = []
+        # for cluster_ in clusters:
+        #     color = tuple(np.append(np.random.random(size=3), [1]))
+        #     scatter_cluster = ScatterPlot3d(cluster_.pts, color=color,
+        #                                     window=scatter_centers.window)
+        # scatter_centers.show()
+        response = input(
+            "Save and continue? Press <1> for yes or <0> to quit.")
+        if response in ["1", "y", "yes"]:
+            save = True
+        # elif response in ["0", "quit", "q"]:
+        #     return
+    # e. and save as a pickled list
+    with open(filenames[3], "wb") as fn:
+        pickle.dump(clusters, fn)
+    # f. save the clusters to a spreadsheet
+    data_to_save = dict()
+    cols = ['x_center', 'y_center', 'z_center', 'theta_center',
+            'phi_center', 'r_center', 'children_pts', 'children_polar', 'n']
+    for col in cols:
+        data_to_save[col] = []
+    for num, cone in enumerate(clusters):
+        x_center, y_center, z_center = cone.pts.astype(float).mean(0)
+        theta_center, phi_center, r_center = cone.polar.astype(
+            float).mean(0)
+        children_pts, children_polar = cone.pts.astype(
+            float), cone.polar.astype(float)
+        n = len(children_pts)
+        for lbl, vals in zip(
+                cols,
+                [x_center, y_center, z_center, theta_center, phi_center, r_center,
+                 children_pts, children_polar, n]):
+            data_to_save[lbl] += [vals]
+        print_progress(num, len(clusters))
+    cone_cluster_data = pd.DataFrame.from_dict(data_to_save)
+    cone_cluster_data.to_csv(filenames[4])
+
+    # 5. Using our set of cone clusters, and the curvature implied by nearest cones,
+    # we can take measurements relevant to the eye's optics.
+    save = False
+    while save is False:
+        cones = clusters
+        cone_centers = np.array([cone.pts.mean(0) for cone in cones])
+        processed = [hasattr(cone, "skewness") for cone in cones]
+        process_cones = True
+        if all(processed):
+            response = input("The clusters have been processed already. "
+                             "Do you want to skip this step? Press <1> to skip or "
+                             "<0> to reprocess the data.")
+            if response in ["1", "y", "yes", "skip"]:
+                process_cones = False
+        if process_cones:
+            nearest_neighbors = spatial.KDTree(cone_centers)
+            dists, lbls = nearest_neighbors.query(cone_centers, k=13)
+            # grab points adjacent to the center point by:
+            # 1. grab 12 points nearest the center point
+            # 2. cluster the points into 2 groups, near and far
+            # 3. filter out the far group
+
+            clusterer = cluster.KMeans(2, init=np.array(
+                [0, 100]).reshape(-1, 1), n_init=1)
+            for lbl, (center, cone) in enumerate(zip(cone_centers, cones)):
+                neighborhood = cone_centers[lbls[lbl]]
+                neighbor_dists = dists[lbl].reshape(-1, 1)
+                neighbor_groups = clusterer.fit_predict(neighbor_dists[1:])
+                cone.neighbor_lbls = lbls[lbl][1:][neighbor_groups == 0]
+
+                # approximate lens diameter using distance to nearest neighbors
+                diam = np.mean(neighbor_dists[1:][neighbor_groups == 0])
+                area = np.pi * (.5 * diam) ** 2
+                cone.lens_area = area
+
+                # approximate ommatidial axis vector by referring to the center of a
+                # sphere fitting around the nearest neighbors
+                pts = Points(neighborhood, center_points=False)
+                pts.spherical()
+                d_vector = pts.center - center
+                d_vector /= LA.norm(d_vector)
+                cone.approx_vector = d_vector
+
+                # approximate ommatidial axis vector by regressing cone data
+                d_vector2 = cone.get_line()
+                cone.anatomical_vector = d_vector2
+
+                # calculate the anatomical skewness (angle between the two vectors)
+                inside_ang = min(
+                    angle_between(d_vector, d_vector2),
+                    angle_between(d_vector, -d_vector2))
+                cone.skewness = inside_ang
+
+                print_progress(lbl, len(cone_centers))
+
+        lens_area = np.array([cone.lens_area for cone in cones])
+        anatomical_vectors = np.array(
+            [cone.anatomical_vector for cone in cones])
+        approx_vectors = np.array([cone.approx_vector for cone in cones])
+        skewness = np.array([cone.skewness for cone in cones])
+        neighbor_lbls = np.array([cone.neighbor_lbls for cone in cones])
+
+        # TODO: 3 scatter plots showing the three parameters
+        scatter_lens_area = ScatterPlot3d(
+            cone_centers,
+            size=10,
+            colorvals=lens_area)
+        scatter_lens_area.show()
+        scatter_skewness = ScatterPlot3d(
+            cone_centers,
+            size=10,
+            colorvals=skewness)
+        scatter_skewness.show()
+        response = input(
+            "Save and continue? Press <1> for yes, <0> to reprocess, or <q> to quit.")
+        if response in ["1", "y", "yes"]:
+            save = True
+        # elif response in ["quit", "q"]:
+        #     return
+
+    cone_cluster_data['lens_area'] = lens_area
+    cone_cluster_data['anatomical_axis'] = anatomical_vectors.tolist()
+    cone_cluster_data['approx_axis'] = approx_vectors.tolist()
+    cone_cluster_data['skewness'] = skewness
+    cone_cluster_data.to_csv(filenames[4])
+    with open(filenames[3], 'wb') as pickle_file:
+        pickle.dump(clusters, pickle_file)
+
+    # 6. using the cone vectors, we can also calculate inter-ommatidial
+    # angles by finding the minimum angle difference between adjacent
+    # cone pairs
+    pairs_tested = set()
+    interommatidial_angle_approx = dict()
+    interommatidial_angle_anatomical = dict()
+    for num, cone in enumerate(cones):
+        approx_IOAs = []
+        anatomical_IOAs = []
+        for neighbor in cone.neighbor_lbls:
+            pair = tuple(sorted([num, neighbor]))
+            if pair not in pairs_tested:
+                neighbor_cone = cones[neighbor]
+                position1, direction1 = (
+                    cone.center, cone.anatomical_vector)
+                position2, direction2 = (
+                    neighbor_cone.center, neighbor_cone.anatomical_vector)
+                anatomical_angle = angle_between_skew_vectors(
+                    position1, direction1,
+                    position2, direction2)
+                direction1, direction2 = (
+                    cone.approx_vector, neighbor_cone.approx_vector)
+                approx_angle = angle_between_skew_vectors(
+                    position1, direction1,
+                    position2, direction2)
+                interommatidial_angle_anatomical[pair] = anatomical_angle
+                interommatidial_angle_approx[pair] = approx_angle
+                pairs_tested.add(pair)
+            else:
+                anatomical_angle = interommatidial_angle_anatomical[pair]
+                approx_angle = interommatidial_angle_approx[pair]
+            anatomical_IOAs += [anatomical_angle]
+            approx_IOAs += [approx_angle]
+        cone.approx_FOV = np.mean(approx_IOAs)
+        cone.anatomical_FOV = np.mean(anatomical_IOAs)
+        print_progress(num, len(cones))
+
+    approx_FOV = np.array([cone.approx_FOV for cone in cones])
+    scatter_FOV = ScatterPlot3d(
+        cone_centers,
+        size=10,
+        colorvals=approx_FOV)
+    scatter_FOV.show()
+
+    cone_centers_p = Points(cone_centers, rotate_com=True)
+    scatter_FOV = ScatterPlot2d(
+        cone_centers_p.polar[:, :2],
+        size=10,
+        colorvals=approx_FOV,
+        cmap=plt.cm.plasma)
+    scatter_FOV.show()
+
+    scatter_FOV = ScatterPlot2d(
+        eye.polar[:, :2],
+        size=2,
+        colorvals=colorvals,
+        cmap=plt.cm.plasma)
+    scatter_FOV.show()
+
 
 if __name__ == "__main__":
     main()
