@@ -2,7 +2,7 @@ save = False
 clusters = None
 while save is False:
     if filenames[3] in other_files:
-        load_file = input(f"{filenames[3]} was found in the current folder."
+        load_file = input(f"{filenames[3]} was found in the current folder. "
                           "Would you like to load this file? Press <1>"
                           " for yes or <0> for no.")
         if load_file in ["1", "y", "yes"]:

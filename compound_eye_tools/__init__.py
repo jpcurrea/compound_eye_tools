@@ -22,6 +22,9 @@ import pyqtgraph as pg
 
 import fly_eye as fe
 
+blue, green, yellow, orange, red, purple = [(0.30, 0.45, 0.69), (0.33, 0.66, 0.41), (
+    0.83, 0.74, 0.37), (0.78, 0.50, 0.16), (0.77, 0.31, 0.32), (0.44, 0.22, 0.78)]
+
 
 def load_image(fn):
     """Import an image as a numpy array using the PIL."""
@@ -208,7 +211,7 @@ class Points():
         if spherical_conversion:
             # fit sphere
             x, y, z = self.pts.T
-            self.radius, self.center, self.residuals = sphereFit(x, y, z)
+            self.radius, self.center, self.resid_ = sphereFit(x, y, z)
             if center_points:
                 # center points using the center of that sphere
                 self.pts = self.pts - self.center
@@ -241,6 +244,7 @@ class Points():
             center = self.center
         self.polar = cartesian_to_spherical(self.pts, center=center)
         self.theta, self.phi, self.radii = self.polar.T
+        self.residuals = self.radii - self.radius
 
     def get_line(self):
         return fit_line(self.pts)
@@ -444,9 +448,9 @@ class ScatterPlot3d():
                                    self.dim))
         if isinstance(self.color, (tuple, list)):
             self.color = np.array(self.color)
-        if self.color is None and colorvals is None:
+        elif self.color is None and colorvals is None:
             colorvals = np.ones(self.arr.shape[0])
-        if self.color is None and colorvals is not None:
+        elif self.color is None and colorvals is not None:
             colorvals = (colorvals - colorvals.min()) / \
                 (colorvals.max() - colorvals.min())
             self.color = np.array([self.cmap(c) for c in colorvals])
@@ -497,44 +501,70 @@ class ScatterPlot2d():
         # how to handle color array:
         # if float or int, repeat float/int and convert to pg.intColor
 
-        if self.colorvals is None and self.color is None:
-            self.color = np.repeat(pg.intColor(1), len(self.arr))
-
-        if self.color is None and self.colorvals is not None:
-            assert len(self.colorvals) == len(self.arr), (
-                "Colorvals array is of the wrong length."
-                f" Array should have length {len(self.arr)},"
-                f" but is {len(self.colorvals)}.")
-            if max(self.colorvals) > 255 or max(self.colorvals) <= 1:
-                self.colorvals = (self.colorvals - self.colorvals.min()) / \
-                    (self.colorvals.max() - self.colorvals.min())
-                self.color = 255 * np.array([self.cmap(c)
-                                             for c in self.colorvals])
-
-        elif isinstance(self.color, (float, int)):
-            self.color = np.repeat(self.color, len(self.arr))
+        if isinstance(self.color, (tuple, list)):
             self.color = np.array(self.color)
+            assert self.color.shape[0] in [
+                4, self.n], "input colors are of the wrong length/shape"
+        elif self.color is None and colorvals is None:
+            colorvals = np.ones(self.arr.shape[0])
+        elif self.color is None and colorvals is not None:
+            assert len(
+                colorvals) == self.n, "inpur colorvals are of the wrong length"
+            colorvals = (colorvals - colorvals.min()) / \
+                (colorvals.max() - colorvals.min())
+            self.color = np.array([self.cmap(c) for c in colorvals])
+        if len(self.color) == 4:
+            self.color = np.tile(color, self.n).reshape(self.n, 4)
+        # if self.color.max() > 1:
+        self.color = self.color / self.color.max()
+        self.color = np.round(255 * self.color).astype(int)
+        # if self.colorvals is None and self.color is None:
+        #     self.color = np.repeat(pg.intColor(1), len(self.arr))
 
-        elif isinstance(self.color, (list, tuple, np.ndarray)):
-            assert len(self.color) in [len(self.arr), 1], (
-                "Color array is of the wrong length."
-                f" Array should have length of 1 or {len(self.arr)},"
-                f" but is {len(self.color)}.")
-            self.color = np.array(self.color)
+        # if self.color is None and self.colorvals is not None:
+        #     assert len(self.colorvals) == len(self.arr), (
+        #         "Colorvals array is of the wrong length."
+        #         f" Array should have length {len(self.arr)},"
+        #         f" but is {len(self.colorvals)}.")
+        #     if max(self.colorvals) > 255 or max(self.colorvals) <= 1:
+        #         self.colorvals = (self.colorvals - self.colorvals.min()) / \
+        #             (self.colorvals.max() - self.colorvals.min())
+        #         self.color = 255 * np.array([self.cmap(c)
+        #                                      for c in self.colorvals])
 
-        if self.color.ndim > 1:
-            if self.color.shape[1] != 4:
-                color = []
-                for c in self.color:
-                    color += [pg.intColor(c[0])]
-                self.color = np.array(color)
-        elif len(self.color) == 4:
-            self.color = np.repeat([self.color], self.n)
+        # elif isinstance(self.color, (float, int)):
+        #     self.color = np.repeat(self.color, len(self.arr))
+        #     self.color = np.array(self.color)
+
+        # elif isinstance(self.color, (list, tuple)):
+        #     assert len(self.color) in [len(self.arr), 1], (
+        #         "Color array is of the wrong length."
+        #         f" Array should have length of 1 or {len(self.arr)},"
+        #         f" but is {len(self.color)}.")
+        #     self.color = np.array(self.color)
+
+        # elif isinstance(self.color, (list, tuple)):
+        #     assert len(self.color) in [len(self.arr), 1], (
+        #         "Color array is of the wrong length."
+        #         f" Array should have length of 1 or {len(self.arr)},"
+        #         f" but is {len(self.color)}.")
+        #     self.color = np.array(self.color)
+
+        # if self.color.ndim > 1:
+        #     if self.color.shape[1] != 4:
+        #         color = []
+        #         for c in self.color:
+        #             color += [pg.intColor(c[0])]
+        #         self.color = np.array(color)
+        # elif len(self.color) == 4:
+        #     self.color = np.repeat([self.color], self.n)
 
         if isinstance(self.size, (float, int)):
             self.size = np.repeat(self.size, self.n)
 
-    def show(self):
+        self.plot()
+
+    def plot(self):
         if self.app is None:
             self.app = QApplication.instance()
             if self.app is None:
@@ -550,7 +580,6 @@ class ScatterPlot2d():
         # pos=self.arr, color=)
         spots = []
         # for pos, size, color in zip(self.arr, self.size, self.color):
-
         for pos, color, size in zip(self.arr, self.color, self.size):
             if isinstance(color, np.ndarray):
                 assert len(color) == 4, (
@@ -568,6 +597,8 @@ class ScatterPlot2d():
                     'brush': pg.mkBrush(color)})
         self.scatter_GUI.addPoints(spots)
         self.axis.addItem(self.scatter_GUI)
+
+    def show(self):
         self.window.show()
         self.app.exec_()
 
@@ -599,7 +630,8 @@ def main():
         "eye_cross_section.pkl",
         "eye_cross_section_image.pkl",
         "eye_crystalline_cone_clusters.pkl",
-        "eye_cone_cluster_data.csv"
+        "eye_cone_cluster_data.csv",
+        "eye_cone_pair_data.csv"
     ]
 
     # 0. import files and use GUI to get the images to filter the stack of images
@@ -637,7 +669,7 @@ def main():
 
     # 2. get approximate cross section of the points in spherical coordinates
     save = False
-    thickness = .7
+    thickness = .5
     while save is False:
         cross_section = None
         if filenames[1] in other_files:
@@ -652,9 +684,9 @@ def main():
         if cross_section is None:
             eye.get_polar_cross_section(thickness=thickness)
             cross_section = eye.cross_section
-        # scatter = ScatterPlot2d(cross_section.polar[:, :2],
-        #                         colorvals=cross_section.radii)
-        # scatter.show()
+        scatter = ScatterPlot2d(cross_section.polar[:, :2],
+                                colorvals=cross_section.radii)
+        scatter.show()
         response = input("Save and continue? Press <1> for yes or <0> to extract "
                          "the cross section using a different thickness?")
         if response in ["1", "y", "yes"]:
@@ -670,6 +702,7 @@ def main():
                 except:
                     thickness = input(
                         "the response must be a number between 0 and 1")
+    eye.save(filenames[0])
     cross_section.save(filenames[1])
 
     save = False
@@ -726,23 +759,67 @@ def main():
     with open(filenames[2], 'wb') as image_pkl:
         pickle.dump(cross_section_eye, image_pkl)
 
-    if cross_section_eye.ommatidia is None:
-        # c. use low pass algorithm from fly_eye on the rasterized image
-        cross_section_eye.get_ommatidia(mask=mask, max_facets=2000)
-    ys, xs = cross_section_eye.ommatidia
-    # recenter the points
-    ommatidia = np.array(
-        [xs + cross_section_eye.xvals.min(),
-         ys + cross_section_eye.yvals.min()]).T
+    save = False
+    while save is False:
+        min_facets = input("What is the fewest possible number of ommatidia?")
+        while isinstance(min_facets, int) is False:
+            try:
+                min_facets = int(min_facets)
+            except:
+                min_facets = input(
+                    "The number of ommatidia should be a whole number.")
+        max_facets = input("What is the most possible number of ommatidia?")
+        while isinstance(max_facets, int) is False:
+            try:
+                max_facets = int(max_facets)
+            except:
+                max_facets = input(
+                    "The number of ommatidia should be a whole number.")
+        process_centers = True
+        if cross_section_eye.ommatidia is not None:
+            response = input("The ommatidia centers have been processed already. "
+                             "Do you want to skip this step? Press <1> to skip or "
+                             "<0> to reprocess the data.")
+            if response in ["1", "y", "yes", "skip"]:
+                process_centers = False
+        if process_centers:
+            # c. use low pass algorithm from fly_eye on the rasterized image
+            cross_section_eye.get_ommatidia(
+                mask=mask, min_facets=min_facets, max_facets=max_facets)
+        ys, xs = cross_section_eye.ommatidia
+        # recenter the points
+        centers = np.array(
+            [xs + cross_section_eye.xvals.min(),
+             ys + cross_section_eye.yvals.min()]).T
 
-    # 4. find points around these crystalline cone approximate centers
-    # a. use distance tree to find cross section coordinates closest to the centers
-    # pdb.set_trace()
-    tree = spatial.KDTree(ommatidia)
-    dists, inds = tree.query(cross_section.polar[:, :2])
-    # b. include only those centers that have at least one nearest neighbor
-    included = sorted(set(inds))
-    ommatidia = ommatidia[included]
+        # 4. find points around these crystalline cone approximate centers
+        # a. use distance tree to find cross section coordinates closest to the centers
+        # pdb.set_trace()
+        tree = spatial.KDTree(centers)
+        dists, inds = tree.query(cross_section.polar[:, :2])
+        # b. include only those centers that have at least one nearest neighbor
+        included = sorted(set(inds))
+        centers = centers[included]
+        # plot the points
+        scatter_pts = ScatterPlot2d(
+            cross_section.polar[:, :2],
+            size=1,
+            color=(1, 1, 1, 1))
+        scatter_centers = ScatterPlot2d(
+            centers,
+            size=10,
+            color=(red[0], red[1], red[2], 1),
+            axis=scatter_pts.axis,
+            window=scatter_pts.window)
+        scatter_pts.show()
+        response = input("Save ommatidia locations and continue?"
+                         " Press <1> for yes to save or <0> to reprocess"
+                         " the centers?")
+        if response in ["1", "y", "yes"]:
+            save = True
+
+    with open(filenames[2], 'wb') as image_pkl:
+        pickle.dump(cross_section_eye, image_pkl)
 
     # c. convert to the original euclidean space
     cluster_centers = []
@@ -768,51 +845,44 @@ def main():
         if clusters is None:
             pts = np.round(eye.pts).astype(np.int16)
             cluster_centers = np.round(cluster_centers).astype(np.int16)
-            clusterer = cluster.KMeans(n_clusters=len(
-                cluster_centers), init=cluster_centers).fit(pts)
-            groups = clusterer.labels_
+            # clusterer = cluster.KMeans(n_clusters=len(
+            #     cluster_centers), init=cluster_centers).fit(pts)
+            # groups = clusterer.labels_
+            # clusters = []
+            # for group in sorted(set(groups)):
+            #     ind = group == groups
+            #     cone = Points(eye.pts[ind], polar=eye.polar[ind],
+            #                   center_points=False, rotate_com=False)
+            #     clusters += [cone]
+            clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=100,
+                algorithm='boruvka_kdtree')
+            safe_radius = np.percentile(abs(eye.residuals), 99)
+            neighbors_tree = spatial.KDTree(eye.pts)
             clusters = []
-            for group in sorted(set(groups)):
-                ind = group == groups
-                cone = Points(eye.pts[ind], polar=eye.polar[ind],
-                              center_points=False, rotate_com=False)
-                clusters += [cone]
-        # scatter_centers = ScatterPlot3d(
-        #     cluster_centers,
-        #     size=10,
-        # )
-        random_groups = np.random.permutation(sorted(set(groups)))
-        colorvals = np.copy(groups)
-        colorvals = np.array([random_groups[colorval]
-                              for colorval in colorvals])
-        # scatter_clusters = ScatterPlot3d(
-        #     eye.pts,
-        #     colorvals=colorvals,
-        #     cmap=plt.cm.hsv
-        # )
-        # scatter_clusters.show()
-        # scatter_clusters = ScatterPlot2d(
-        #     eye.polar[:, :2],
-        #     colorvals=colorvals,
-        #     cmap=plt.cm.plasma
-        # )
-        # scatter_centers = ScatterPlot2d(
-        #     ommatidia,
-        #     size=10,
-        #     window=scatter_clusters.window,
-        # )
-        # scatter_clusters.show()
-        # scatter_centers = ScatterPlot2d(
-        #     ommatidia,
-        #     size=10,
-        # )
-        # scatter_centers.show()
-        # scatters = []
-        # for cluster_ in clusters:
-        #     color = tuple(np.append(np.random.random(size=3), [1]))
-        #     scatter_cluster = ScatterPlot3d(cluster_.pts, color=color,
-        #                                     window=scatter_centers.window)
-        # scatter_centers.show()
+            for num, center in enumerate(cluster_centers):
+                i = neighbors_tree.query_ball_point(center, r=safe_radius)
+                near_pts = eye.pts[i]
+                near_polar = eye.polar[i]
+                near_pts = np.round(near_pts).astype(int)
+                near_polar = np.round(near_polar).astype(int)
+                if len(near_pts) >= 100:
+                    labels = clusterer.fit_predict(near_pts)
+                    lbl_centers = []
+                    lbl_names = sorted(set(labels))
+                    for lbl in lbl_names:
+                        pts = near_pts[labels == lbl]
+                        lbl_centers += [pts.mean(0)]
+                    lbl_centers = np.array(lbl_centers)
+                    dist_tree = spatial.KDTree(lbl_centers)
+                    dist, ind = dist_tree.query(center, k=1)
+                    if dist <= 2:
+                        lbl = labels == lbl_names[ind]
+                        cone = Points(near_pts[lbl], polar=near_polar[lbl],
+                                      center_points=False, rotate_com=False)
+                        clusters += [cone]
+                print_progress(num, len(cluster_centers))
+
         response = input(
             "Save and continue? Press <1> for yes or <0> to quit.")
         if response in ["1", "y", "yes"]:
@@ -941,6 +1011,7 @@ def main():
     for num, cone in enumerate(cones):
         approx_IOAs = []
         anatomical_IOAs = []
+        pairs = []
         for neighbor in cone.neighbor_lbls:
             pair = tuple(sorted([num, neighbor]))
             if pair not in pairs_tested:
@@ -960,6 +1031,7 @@ def main():
                 interommatidial_angle_anatomical[pair] = anatomical_angle
                 interommatidial_angle_approx[pair] = approx_angle
                 pairs_tested.add(pair)
+                pairs += [pair]
             else:
                 anatomical_angle = interommatidial_angle_anatomical[pair]
                 approx_angle = interommatidial_angle_approx[pair]
@@ -969,27 +1041,34 @@ def main():
         cone.anatomical_FOV = np.mean(anatomical_IOAs)
         print_progress(num, len(cones))
 
-    approx_FOV = np.array([cone.approx_FOV for cone in cones])
-    scatter_FOV = ScatterPlot3d(
-        cone_centers,
-        size=10,
-        colorvals=approx_FOV)
-    scatter_FOV.show()
+    with open(filenames[3], 'wb') as pickle_file:
+        pickle.dump(clusters, pickle_file)
 
-    cone_centers_p = Points(cone_centers, rotate_com=True)
-    scatter_FOV = ScatterPlot2d(
-        cone_centers_p.polar[:, :2],
-        size=10,
-        colorvals=approx_FOV,
-        cmap=plt.cm.plasma)
-    scatter_FOV.show()
+    import pdb
+    pdb.set_trace()
 
-    scatter_FOV = ScatterPlot2d(
-        eye.polar[:, :2],
-        size=2,
-        colorvals=colorvals,
-        cmap=plt.cm.plasma)
-    scatter_FOV.show()
+    pairs_tested = np.array(list(pairs_tested))
+    IOA_approx = np.array(list(interommatidial_angle_approx.values()))
+    IOA_anatomical = np.array(list(interommatidial_angle_anatomical.values()))
+    data_to_save = dict()
+    cols = ['cluster1', 'cluster2', 'cluster1_center', 'cluster2_center',
+            'cluster1_polar_center', 'cluster2_polar_center',
+            'approx_angle', 'anatomical_angle']
+    for col in cols:
+        data_to_save[col] = []
+    for num, (pair, approx, anatomical) in enumerate(
+            zip(pairs_tested, IOA_approx, IOA_anatomical)):
+        ind1, ind2 = pair
+        cluster1, cluster2 = clusters[ind1], clusters[ind2]
+        for lbl, vals in zip(
+                cols,
+                [ind1, ind2, cluster1.pts.mean(0), cluster2.pts.mean(0),
+                 cluster1.polar.mean(0), cluster2.polar.mean(0),
+                 approx, anatomical]):
+            data_to_save[lbl] += [vals]
+        print_progress(num, len(pairs_tested))
+    cone_pair_data = pd.DataFrame.from_dict(data_to_save)
+    cone_pair_data.to_csv(filenames[5])
 
 
 if __name__ == "__main__":

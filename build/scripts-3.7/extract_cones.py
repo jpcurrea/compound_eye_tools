@@ -10,7 +10,7 @@ pqt_window = gl.GLViewWidget()
 pqt_window.opts['distance'] = 1000
 pqt_window.show()
 pqt_window.setWindowTitle('Moth Eye Ommatidia')
-
+ 
 print("0. Select the range of densities predominantly in the crystalline cones, filter the data, and save.")
 
 # 0a. let user select, from images at different orientations,
@@ -30,7 +30,7 @@ for num, fn in enumerate(fns):
     except:
         print(f"{fn} failed to load properly.")
     print_progress(num, zs)
-
+    
     arr = np.array(imgs, dtype=np.uint16)
 
 assert len(arr) > 0, "All images failed to load."
@@ -124,8 +124,7 @@ for scatter in scatters:
 scatter = gl.GLScatterPlotItem(pos=clusters[choice_lbl], size=1)
 pqt_window.addItem(scatter)
 
-choice = input(
-    "Displaying sample eye data only. To find other points within cluster, press <Enter>.")
+choice = input("Displaying sample eye data only. To find other points within cluster, press <Enter>.")
 pqt_window.removeItem(scatter)
 cluster_labels, cluster_strengths = [], []
 print("Finding other points in cluster:")
@@ -200,8 +199,7 @@ choice = input("Points within thin sheet around interpolated surface:")
 pqt_window.removeItem(scatter)
 
 arr2 = np.array([tmesh.ravel(), pmesh.ravel(), grid_arr.ravel()]).T
-sheet = gl.GLScatterPlotItem(
-    pos=arr2[nans == False], size=1, color=(0, 1, 0, 1))
+sheet = gl.GLScatterPlotItem(pos=arr2[nans == False], size=1, color=(0,1,0,1))
 pqt_window.addItem(sheet)
 sheet.scale(1, 1, .01)
 
@@ -284,13 +282,12 @@ for num, center in enumerate(coord_centers):
         dist, ind = dist_tree.query(center, k=1)
         if dist <= 2:
             lbl = labels == lbl_names[ind]
-            cones += [Points(near_pts[lbl],
-                             polar=near_polar[lbl], center_points=False)]
+            cones += [Points(near_pts[lbl], polar=near_polar[lbl], center_points=False)]
     print_progress(num, len(coord_centers))
 
 # 4b. store data to a spreadsheet for measurements in the next step
-cols = ['x_center', 'y_center', 'z_center', 'theta_center', 'phi_center', 'r_center',
-        'children_pts', 'children_polar', 'n']
+cols = ['x_center','y_center','z_center','theta_center','phi_center','r_center',
+        'children_pts','children_polar','n']
 data_to_save = dict()
 for col in cols:
     data_to_save[col] = []
@@ -298,8 +295,7 @@ for num, cone in enumerate(cones):
     cone.spherical()
     x_center, y_center, z_center = cone.pts.astype(float).mean(0)
     theta_center, phi_center, r_center = cone.polar.astype(float).mean(0)
-    children_pts, children_polar = cone.pts.astype(
-        float), cone.polar.astype(float)
+    children_pts, children_polar = cone.pts.astype(float), cone.polar.astype(float)
     n = len(children_pts)
     for lbl, vals in zip(
             cols,
@@ -342,7 +338,7 @@ for lbl, (center, cone) in enumerate(zip(cone_centers, cones)):
     neighbor_groups = clusterer.fit_predict(neighbor_dists[1:])
     neighbor_lbls += [lbls[lbl][1:][neighbor_groups == 0]]
     cone.neighbor_lbls = lbls[lbl][1:][neighbor_groups == 0]
-
+    
     # approximate lens diameter using distance to nearest neighbors
     diam = np.mean(neighbor_dists[1:][neighbor_groups == 0])
     area = np.pi * (.5 * diam) ** 2
@@ -356,7 +352,7 @@ for lbl, (center, cone) in enumerate(zip(cone_centers, cones)):
     d_vector /= LA.norm(d_vector)
     approx_vectors += [d_vector]
     cone.approx_vector = d_vector
-
+    
     # approximate ommatidial axis vector by regressing cone data
     d_vector2 = cone.get_line()
     anatomical_vectors += [d_vector2]
@@ -402,6 +398,7 @@ pqt_window.addItem(scatter)
 #     # grab adjacent cones, determined earlier
 #     neighbors = [cones[lbl] for lbl in cone.neighbor_lbls]
 #     for neighbor in neighbors:
+        
 
 
 # scatter = gl.GLScatterPlotItem(pos=head[selection], size=1)
@@ -428,6 +425,7 @@ pqt_window.addItem(scatter)
 #     size=10,
 #     color=[1, 1, 1, 1])
 # spherical_plot.addItem(center_points)
+
 
 
 # cone_scatter = gl.GLScatterPlotItem(pos=cone.pts - cone.pts.mean(0), size=1, color=(1,0,0,1))
