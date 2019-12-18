@@ -31,6 +31,14 @@ def load_image(fn):
     return np.asarray(PIL.Image.open(fn))
 
 
+def save_image(fn, arr):
+    """Save an image using the PIL."""
+    img = PIL.Image.fromarray(arr)
+    if os.path.exists(fn):
+        os.remove(fn)
+    return img.save(fn)
+
+
 def print_progress(part, whole, bar=True):
     """Print the part/whole progress bar."""
     prop = float(part)/float(whole)
@@ -279,17 +287,25 @@ class Points():
         ys = ys[:-1] + (pixel_length / 2.)
         return self.raster, (xs, ys)
 
-    def fit_surface(self, mode='polar', outcome_axis=0, pixel_length=.01):
+    # def fit_surface(self, mode='polar', outcome_axis=0, pixel_length=.01):
+    def fit_surface(self, mode='polar', outcome_axis=0, image_size=10**4):
         """Find cubic interpolation surface of one axis using the other two."""
         if mode == 'pts':
             arr = self.pts
         if mode == 'polar':
             arr = self.polar
         x, y, z = arr.T
-
+        x_range = x.max() - x.min()
+        y_range = y.max() - y.min()
+        # figure out side lengths needed for input image size
+        ratio = y_range / x_range
+        x_len = int(np.round(np.sqrt(image_size/ratio)))
+        y_len = int(np.round(ratio * x_len))
         # reduce data using a 2D rolling average
-        xs = np.arange(x.min(), x.max(), pixel_length)
-        ys = np.arange(y.min(), y.max(), pixel_length)
+        # xs = np.arange(x.min(), x.max(), pixel_length)
+        # ys = np.arange(y.min(), y.max(), pixel_length)
+        xs = np.linspace(x.min(), x.max(), x_len)
+        ys = np.linspace(y.min(), y.max(), y_len)
         avg = []
         for col_num, (x1, x2) in enumerate(zip(xs[:-1], xs[1:])):
             col = []
@@ -302,23 +318,27 @@ class Points():
                     avg += [np.mean(in_column[in_row], axis=0)]
             print_progress(col_num, len(xs) - 1)
         avg = np.array(avg)
-
         # filter outlier points by using bootstraped 95% confidence band (not of the mean)
         low, high = np.percentile(avg[:, 2], [.5, 99.5])
         avg = avg[np.logical_and(avg[:, 2] >= low, avg[:, 2] < high)]
         avg_x, avg_y, avg_z = avg.T
-
         # interpolate through avg to get 'cross section' using
         # bivariate spline (bisplrep)
-        tck = interpolate.bisplrep(avg_x, avg_y, avg_z)
+        # tck = interpolate.bisplrep(avg_x, avg_y, avg_z, s=0)
+        interp_func = interpolate.interp2d(avg_x, avg_y, avg_z, kind='cubic')
+        # import pdb
+        # pdb.set_trace()
         z_new = []
-        for xx, yy in zip(x, y):
-            z_new += [interpolate.bisplev(xx, yy, tck)]
+        for num, (xx, yy) in enumerate(zip(x, y)):
+            # z_new += [interpolate.bisplev(xx, yy, tck)]
+            z_new.append(interp_func(xx, yy))
+            print_progress(num, len(x))
         self.surface = np.array(z_new)
 
     def get_polar_cross_section(self, thickness=.1, pixel_length=.01):
         """Find best fitting surface of radii using phis and thetas."""
-        self.fit_surface(mode='polar', pixel_length=pixel_length)
+        # self.fit_surface(mode='polar', pixel_length=pixel_length)
+        self.fit_surface(mode='polar')
         # find distance of datapoints from surface (ie. residuals)
         self.residuals = self.radii - self.surface
         # choose points within 'thickness' proportion of residuals
@@ -338,9 +358,9 @@ class Points():
 
 
 filetypes = [
+    ('tiff images', '*.tiff *.TIFF *.tff *.TFF *.tif *.TIF'),
     ('jpeg images', '*.jpeg *.jpg *.JPEG *.JPG'),
     ('png images', '*.png *.PNG'),
-    ('tiff images', '*.tiff *.TIFF *.tff *.TFF *.tif *.TIF'),
     ('bmp images', '*.bmp *.BMP'),
     ('all types', '*.*')]
 
@@ -351,7 +371,11 @@ ftypes = ";;".join(ftypes)
 class fileSelector(QWidget):
     """Offer a file selection dialog box filtering common image filetypes."""
 
-    def __init__(self, filetypes=ftypes):
+    def __init__(self, filetypes=ftypes, app=None):
+        if app is None:
+            self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication([])
         super().__init__()
         self.title = 'Select the images you want to process.'
         self.left = 10
@@ -383,7 +407,10 @@ class stackFilter():
 
     def __init__(self, fns=os.listdir("./"), app=None):
         """Import images using fns, a list of filenames."""
-        self.app = app
+        if app is None:
+            self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication([])
         self.fns = fns
         imgs = []
         print("Loading images:\n")
@@ -427,13 +454,46 @@ class stackFilter():
 
         self.arr = np.array([xs, ys, zs], dtype=np.uint16).T
 
+    def pre_filter(self):
+        """Use pyqtgraph's image UI to select lower an upper bound contrasts."""
+        # if there is no defined application instance, make one
+        if self.app is None:
+            self.app = QApplication.instance()
+            if self.app is None:
+                self.app = QApplication([])
+
+        self.image_UI = pg.image(self.imgs)  # use the image UI from pyqtgraph
+        self.image_UI.setPredefinedGradient('greyclip')
+        self.app.exec_()      # allow the application to run until closed
+        # grab low and high bounds from UI
+        self.low, self.high = self.image_UI.getLevels()
+        dirname = os.path.dirname(self.fns[0])
+        folder = os.path.join(dirname, 'prefiltered')
+        if not os.path.isdir(folder):
+            os.mkdir(folder)
+        np.logical_and(self.imgs > self.low, self.imgs <
+                       self.high, out=self.imgs)
+        self.imgs = self.imgs.astype('uint8', copy=False)
+        np.multiply(self.imgs, 255, out=self.imgs)
+        print("Saving filtered images:\n")
+        for num, (fn, img) in enumerate(zip(self.fns, self.imgs)):
+            base = os.path.basename(fn)
+            new_fn = os.path.join(folder, base)
+            save_image(new_fn, img)
+            print_progress(num + 1, len(self.fns))
+
 
 class ScatterPlot3d():
     """Plot 3d datapoints using pyqtgraph's GLScatterPlotItem."""
 
     def __init__(self, arr, color=None, size=1, app=None, window=None,
                  colorvals=None, cmap=plt.cm.viridis):
+
         self.arr = arr
+        if app is None:
+            self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication([])
         self.color = color
         self.cmap = cmap
         self.size = size
@@ -482,6 +542,11 @@ class ScatterPlot2d():
     # def __init__(self, arr, color=(1, 1, 1, 1), size=[1], app=None, window=None):
     def __init__(self, arr, color=None, app=None, window=None, size=1,
                  axis=None, colorvals=None, cmap=plt.cm.viridis, scatter_GUI=None):
+
+        if app is None:
+            self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication([])
         self.arr = np.array(arr)
         self.color = color
         self.colorvals = colorvals
@@ -615,6 +680,15 @@ def filter_and_preview_images(fns):
     # use Points class to fit a sphere and convert to spherical coordinates, and
     eye = Points(eye, center_points=True, rotate_com=True)
     return eye
+
+
+def pre_filter():
+    file_UI = fileSelector()
+    file_UI.close()
+    fns = file_UI.files
+
+    SF = stackFilter(fns)
+    SF.pre_filter()
 
 
 def main():
