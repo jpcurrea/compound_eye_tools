@@ -333,7 +333,7 @@ class Points():
             # z_new += [interpolate.bisplev(xx, yy, tck)]
             z_new.append(interp_func(xx, yy))
             print_progress(num, len(x))
-        self.surface = np.array(z_new)
+        self.surface = np.array(z_new)[:, 0]
 
     def get_polar_cross_section(self, thickness=.1, pixel_length=.01):
         """Find best fitting surface of radii using phis and thetas."""
@@ -510,7 +510,7 @@ class ScatterPlot3d():
             self.color = np.array(self.color)
         elif self.color is None and colorvals is None:
             colorvals = np.ones(self.arr.shape[0])
-        elif self.color is None and colorvals is not None:
+        if self.color is None and colorvals is not None:
             colorvals = (colorvals - colorvals.min()) / \
                 (colorvals.max() - colorvals.min())
             self.color = np.array([self.cmap(c) for c in colorvals])
@@ -572,7 +572,7 @@ class ScatterPlot2d():
                 4, self.n], "input colors are of the wrong length/shape"
         elif self.color is None and colorvals is None:
             colorvals = np.ones(self.arr.shape[0])
-        elif self.color is None and colorvals is not None:
+        if self.color is None and colorvals is not None:
             assert len(
                 colorvals) == self.n, "inpur colorvals are of the wrong length"
             colorvals = (colorvals - colorvals.min()) / \
@@ -703,6 +703,7 @@ def main():
         "eye_coordinates_Points.pkl",
         "eye_cross_section.pkl",
         "eye_cross_section_image.pkl",
+        "cluster_centers.npy",
         "eye_crystalline_cone_clusters.pkl",
         "eye_cone_cluster_data.csv",
         "eye_cone_pair_data.csv"
@@ -743,7 +744,7 @@ def main():
 
     # 2. get approximate cross section of the points in spherical coordinates
     save = False
-    thickness = .5
+    thickness = .8
     while save is False:
         cross_section = None
         if filenames[1] in other_files:
@@ -758,9 +759,9 @@ def main():
         if cross_section is None:
             eye.get_polar_cross_section(thickness=thickness)
             cross_section = eye.cross_section
-        scatter = ScatterPlot2d(cross_section.polar[:, :2],
-                                colorvals=cross_section.radii)
-        scatter.show()
+        # scatter = ScatterPlot2d(cross_section.polar[:, :2],
+        #                         colorvals=cross_section.radii)
+        # scatter.show()
         response = input("Save and continue? Press <1> for yes or <0> to extract "
                          "the cross section using a different thickness?")
         if response in ["1", "y", "yes"]:
@@ -800,21 +801,22 @@ def main():
             # 3. use low pass filter method from Eye object in fly_eye to find centers
             # of cone clusters/ommatidia.
             # a. rasterize the image so that we can use our image processing algorithm in fly_eye
-            cross_section_eye = fe.Eye(img, pixel_size=pixel_length)
+            mask = img != 0
+            mask = ndimage.binary_dilation(mask, iterations=20)
+            mask = ndimage.binary_erosion(mask, iterations=20)
+            cross_section_eye = fe.Eye(img, pixel_size=pixel_length, mask=mask)
             cross_section_eye.xvals, cross_section_eye.yvals = xvals, yvals
             # dilated = ndimage.morphology.binary_dilation(
             #     img, iterations=20).astype('uint8')
             # # b. make an approximate mask using the lower and upper bounds per column
             # mask = np.zeros(img.shape, dtype=bool)
-            mask = img != 0
-            mask = ndimage.binary_dilation(mask, iterations=2)
             # for col, col_vals in enumerate(dilated):
             #     inds = np.where(col_vals)[0]
             #     if inds.sum() > 0:
             #         first, last = inds.min(), inds.max()
             #         mask[col, first: last + 1] = True
-        mask = img != 0
-        mask = ndimage.binary_dilation(mask, iterations=2)
+        # mask = img != 0
+        # mask = ndimage.binary_dilation(mask, iterations=2)
         pg.image(img)
         app.exec_()
         response = input("Save and continue? Press <1> for yes or <0> to rasterize "
@@ -826,7 +828,8 @@ def main():
             success = False
             while success is False:
                 try:
-                    pixel_length = float(thickness)
+                    pixel_length = float(pixel_length)
+                    success = True
                 except:
                     pixel_length = input("the response must be a number")
 
@@ -858,9 +861,15 @@ def main():
                 process_centers = False
         if process_centers:
             # c. use low pass algorithm from fly_eye on the rasterized image
+            # cross_section_eye.mask = mask
             cross_section_eye.get_ommatidia(
-                mask=mask, min_facets=min_facets, max_facets=max_facets)
+                min_facets=min_facets, max_facets=max_facets, method=0)
+            breakpoint()
         ys, xs = cross_section_eye.ommatidia
+        ps = cross_section_eye.pixel_size
+        plt.imshow(img, cmap='gray')
+        plt.scatter(ys/ps, xs/ps, marker='.', color=red)
+        plt.show()
         # recenter the points
         centers = np.array(
             [xs + cross_section_eye.xvals.min(),
@@ -869,23 +878,23 @@ def main():
         # 4. find points around these crystalline cone approximate centers
         # a. use distance tree to find cross section coordinates closest to the centers
         # pdb.set_trace()
-        tree = spatial.KDTree(centers)
-        dists, inds = tree.query(cross_section.polar[:, :2])
+        # tree = spatial.KDTree(centers)
+        # dists, inds = tree.query(cross_section.polar[:, :2])
         # b. include only those centers that have at least one nearest neighbor
-        included = sorted(set(inds))
-        centers = centers[included]
+        # included = sorted(set(inds))
+        # centers = centers[included]
         # plot the points
-        scatter_pts = ScatterPlot2d(
-            cross_section.polar[:, :2],
-            size=1,
-            color=(1, 1, 1, 1))
-        scatter_centers = ScatterPlot2d(
-            centers,
-            size=10,
-            color=(red[0], red[1], red[2], 1),
-            axis=scatter_pts.axis,
-            window=scatter_pts.window)
-        scatter_pts.show()
+        # scatter_pts = ScatterPlot2d(
+        #     cross_section.polar[:, :2],
+        #     size=1,
+        #     color=(1, 1, 1, 1))
+        # scatter_centers = ScatterPlot2d(
+        #     centers,
+        #     size=10,
+        #     color=(red[0], red[1], red[2], 1),
+        #     axis=scatter_pts.axis,
+        #     window=scatter_pts.window)
+        # scatter_pts.show()
         response = input("Save ommatidia locations and continue?"
                          " Press <1> for yes to save or <0> to reprocess"
                          " the centers?")
@@ -896,66 +905,89 @@ def main():
         pickle.dump(cross_section_eye, image_pkl)
 
     # c. convert to the original euclidean space
-    cluster_centers = []
-    for ind in sorted(set(inds)):
-        cluster_ = cross_section.original_pts[inds == ind]
-        cluster_centers += [cluster_.mean(0)]
-    cluster_centers = np.array(cluster_centers).astype('float16')
+    cluster_centers = None
+    if filenames[3] in other_files:
+        load_file = input(f"{filenames[3]} was found in the current folder."
+                          "Would you like to load this file? Press <1>"
+                          " for yes or <0> for no.")
+        if load_file in ["1", "y", "yes"]:
+            cluster_centers = np.load(filenames[3])
+        else:
+            os.remove(filenames[3])
+            other_files.remove(filenames[3])
+    if cluster_centers is None:
+        tree = spatial.KDTree(centers)
+        # for center in centers:
+        inds = []
+        total = len(cross_section.polar[:, :2])
+        for num, p in enumerate(cross_section.polar[:, :2]):
+            dist, ind = tree.query(p, k=1)
+            inds.append(ind)
+            print_progress(num, total)
+        inds = np.array(inds)
+        cluster_centers = []
+        clusters = []
+        for ind in sorted(set(inds)):
+            cluster_ = cross_section.original_pts[inds == ind]
+            clusters.append(cluster_)
+            cluster_centers += [cluster_.mean(0)]
+        cluster_centers = np.array(cluster_centers).astype('float16')
+        np.save(filenames[3], cluster_centers)
     # d. now, find clusters within the total dataset nearest the converted centers
-    # using the K-means algorithm
+    # using a cluster algorithm
     save = False
     clusters = None
     while save is False:
-        if filenames[3] in other_files:
-            load_file = input(f"{filenames[3]} was found in the current folder."
+        if filenames[4] in other_files:
+            load_file = input(f"{filenames[4]} was found in the current folder."
                               "Would you like to load this file? Press <1>"
                               " for yes or <0> for no.")
             if load_file in ["1", "y", "yes"]:
-                with open(filenames[3], 'rb') as cluster_file:
+                with open(filenames[4], 'rb') as cluster_file:
                     clusters = pickle.load(cluster_file)
             else:
-                os.remove(filenames[3])
-                other_files.remove(filenames[3])
+                os.remove(filenames[4])
+                other_files.remove(filenames[4])
         if clusters is None:
             pts = np.round(eye.pts).astype(np.int16)
             cluster_centers = np.round(cluster_centers).astype(np.int16)
-            # clusterer = cluster.KMeans(n_clusters=len(
-            #     cluster_centers), init=cluster_centers).fit(pts)
-            # groups = clusterer.labels_
-            # clusters = []
-            # for group in sorted(set(groups)):
-            #     ind = group == groups
-            #     cone = Points(eye.pts[ind], polar=eye.polar[ind],
-            #                   center_points=False, rotate_com=False)
-            #     clusters += [cone]
-            clusterer = hdbscan.HDBSCAN(
-                min_cluster_size=100,
-                algorithm='boruvka_kdtree')
-            safe_radius = np.percentile(abs(eye.residuals), 99)
-            neighbors_tree = spatial.KDTree(eye.pts)
+            clusterer = cluster.KMeans(n_clusters=len(
+                cluster_centers), init=cluster_centers).fit(pts)
+            groups = clusterer.labels_
             clusters = []
-            for num, center in enumerate(cluster_centers):
-                i = neighbors_tree.query_ball_point(center, r=safe_radius)
-                near_pts = eye.pts[i]
-                near_polar = eye.polar[i]
-                near_pts = np.round(near_pts).astype(int)
-                near_polar = np.round(near_polar).astype(int)
-                if len(near_pts) >= 100:
-                    labels = clusterer.fit_predict(near_pts)
-                    lbl_centers = []
-                    lbl_names = sorted(set(labels))
-                    for lbl in lbl_names:
-                        pts = near_pts[labels == lbl]
-                        lbl_centers += [pts.mean(0)]
-                    lbl_centers = np.array(lbl_centers)
-                    dist_tree = spatial.KDTree(lbl_centers)
-                    dist, ind = dist_tree.query(center, k=1)
-                    if dist <= 2:
-                        lbl = labels == lbl_names[ind]
-                        cone = Points(near_pts[lbl], polar=near_polar[lbl],
-                                      center_points=False, rotate_com=False)
-                        clusters += [cone]
-                print_progress(num, len(cluster_centers))
+            for group in sorted(set(groups)):
+                ind = group == groups
+                cone = Points(eye.pts[ind], polar=eye.polar[ind],
+                              center_points=False, rotate_com=False)
+                clusters += [cone]
+            # clusterer = hdbscan.HDBSCAN(
+            #     min_cluster_size=100,
+            #     algorithm='boruvka_kdtree')
+            # safe_radius = np.percentile(abs(eye.residuals), 99)
+            # neighbors_tree = spatial.KDTree(eye.pts)
+            # clusters = []
+            # for num, center in enumerate(cluster_centers):
+            #     i = neighbors_tree.query_ball_point(center, r=safe_radius)
+            #     near_pts = eye.pts[i]
+            #     near_polar = eye.polar[i]
+            #     near_pts = np.round(near_pts).astype(int)
+            #     near_polar = np.round(near_polar).astype(int)
+            #     if len(near_pts) >= 100:
+            #         labels = clusterer.fit_predict(near_pts)
+            #         lbl_centers = []
+            #         lbl_names = sorted(set(labels))
+            #         for lbl in lbl_names:
+            #             pts = near_pts[labels == lbl]
+            #             lbl_centers += [pts.mean(0)]
+            #         lbl_centers = np.array(lbl_centers)
+            #         dist_tree = spatial.KDTree(lbl_centers)
+            #         dist, ind = dist_tree.query(center, k=1)
+            #         if dist <= 2:
+            #             lbl = labels == lbl_names[ind]
+            #             cone = Points(near_pts[lbl], polar=near_polar[lbl],
+            #                           center_points=False, rotate_com=False)
+            #             clusters += [cone]
+            #     print_progress(num, len(cluster_centers))
 
         response = input(
             "Save and continue? Press <1> for yes or <0> to quit.")
@@ -964,7 +996,7 @@ def main():
         # elif response in ["0", "quit", "q"]:
         #     return
     # e. and save as a pickled list
-    with open(filenames[3], "wb") as fn:
+    with open(filenames[4], "wb") as fn:
         pickle.dump(clusters, fn)
     # f. save the clusters to a spreadsheet
     data_to_save = dict()
@@ -986,7 +1018,7 @@ def main():
             data_to_save[lbl] += [vals]
         print_progress(num, len(clusters))
     cone_cluster_data = pd.DataFrame.from_dict(data_to_save)
-    cone_cluster_data.to_csv(filenames[4])
+    cone_cluster_data.to_csv(filenames[5])
 
     # 5. Using our set of cone clusters, and the curvature implied by nearest cones,
     # we can take measurements relevant to the eye's optics.
@@ -1072,8 +1104,8 @@ def main():
     cone_cluster_data['anatomical_axis'] = anatomical_vectors.tolist()
     cone_cluster_data['approx_axis'] = approx_vectors.tolist()
     cone_cluster_data['skewness'] = skewness
-    cone_cluster_data.to_csv(filenames[4])
-    with open(filenames[3], 'wb') as pickle_file:
+    cone_cluster_data.to_csv(filenames[5])
+    with open(filenames[4], 'wb') as pickle_file:
         pickle.dump(clusters, pickle_file)
 
     # 6. using the cone vectors, we can also calculate inter-ommatidial
@@ -1115,11 +1147,11 @@ def main():
         cone.anatomical_FOV = np.mean(anatomical_IOAs)
         print_progress(num, len(cones))
 
-    with open(filenames[3], 'wb') as pickle_file:
+    with open(filenames[4], 'wb') as pickle_file:
         pickle.dump(clusters, pickle_file)
 
-    import pdb
-    pdb.set_trace()
+    # import pdb
+    # pdb.set_trace()
 
     pairs_tested = np.array(list(pairs_tested))
     IOA_approx = np.array(list(interommatidial_angle_approx.values()))
@@ -1142,8 +1174,14 @@ def main():
             data_to_save[lbl] += [vals]
         print_progress(num, len(pairs_tested))
     cone_pair_data = pd.DataFrame.from_dict(data_to_save)
-    cone_pair_data.to_csv(filenames[5])
+    cone_pair_data.to_csv(filenames[4])
 
 
 if __name__ == "__main__":
     main()
+
+# eye = load_Points(
+#     "../../13460_tiff-stack-volume/prefiltered/eye_coordinates_Points.pkl")
+# eye.get_polar_cross_section(thickness=.1)
+
+# main()
