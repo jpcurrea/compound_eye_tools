@@ -1,13 +1,9 @@
-import pdb
 from matplotlib import pyplot as plt
-from matplotlib import colors
 from scipy import spatial, interpolate, ndimage
 import numpy as np
-import hdbscan
 import PIL
 import sys
 import os
-from sty import fg
 import pandas as pd
 import math
 import pickle
@@ -48,7 +44,7 @@ def print_progress(part, whole, bar=True):
         prog_bar = '='*int(20*prop)
         st = f"[{prog_bar:20s}] {round(100 * prop)}%"
     else:
-        st = f"{round(100*prop)}%"
+        st = f"{round(100*prop)}%\n"
     sys.stdout.write(st)
     sys.stdout.flush()
 
@@ -158,7 +154,7 @@ def angle_between(v1, v2):
 def angle_between_skew_vectors(
         position_vector_1, direction_vector_1,
         position_vector_2, direction_vector_2):
-    """uses derivation from 
+    """uses derivation from
     https://en.wikipedia.org/wiki/Skew_lines#Nearest_Points
     """
     p1, d1 = position_vector_1, direction_vector_1
@@ -257,7 +253,8 @@ class Points():
     def get_line(self):
         return fit_line(self.pts)
 
-    def rasterize(self, mode='polar', axes=[0, 1], pixel_length=.01):
+    def rasterize(self, mode='polar', axes=[0, 1], pixel_length=.01,
+                  image_size=10**5):
         """Rasterize float coordinates in to a grid defined by min and max vals
         and sampled at pixel_length.
         """
@@ -267,12 +264,17 @@ class Points():
             arr = self.polar
         x, y, z = arr.T
 
-        xs = np.arange(x.min(), x.max(), pixel_length)
-        ys = np.arange(y.min(), y.max(), pixel_length)
-
+        x_range = x.max() - x.min()
+        y_range = y.max() - y.min()
+        # figure out side lengths needed for input image size
+        ratio = y_range / x_range
+        x_len = int(np.round(np.sqrt(image_size/ratio)))
+        y_len = int(np.round(ratio * x_len))
+        # get x and y ranges corresponding to image size
+        xs = np.linspace(x.min(), x.max(), x_len)
+        ys = np.linspace(y.min(), y.max(), y_len)
         avg = []
         for col_num, (x1, x2) in enumerate(zip(xs[:-1], xs[1:])):
-            col = []
             in_column = np.logical_and(x >= x1, x < x2)
             in_column = arr[in_column]
             for row_num, (y1, y2) in enumerate(zip(ys[:-1], ys[1:])):
@@ -280,15 +282,16 @@ class Points():
                     in_column[:, 1] >= y1, in_column[:, 1] < y2)
                 avg += [in_row.sum()]
             print_progress(col_num, len(xs) - 1)
+        print("\n")
         avg = np.array(avg)
         avg = avg.reshape((len(xs) - 1, len(ys) - 1))
         self.raster = avg
         xs = xs[:-1] + (pixel_length / 2.)
         ys = ys[:-1] + (pixel_length / 2.)
-        return self.raster, (xs, ys)
+        return self.raster
 
     # def fit_surface(self, mode='polar', outcome_axis=0, pixel_length=.01):
-    def fit_surface(self, mode='polar', outcome_axis=0, image_size=10**4):
+    def fit_surface(self, mode='polar', outcome_axis=0, image_size=10**3):
         """Find cubic interpolation surface of one axis using the other two."""
         if mode == 'pts':
             arr = self.pts
@@ -317,23 +320,28 @@ class Points():
                 if any(in_row):
                     avg += [np.mean(in_column[in_row], axis=0)]
             print_progress(col_num, len(xs) - 1)
+        print("\n")
         avg = np.array(avg)
         # filter outlier points by using bootstraped 95% confidence band (not of the mean)
         low, high = np.percentile(avg[:, 2], [.5, 99.5])
         avg = avg[np.logical_and(avg[:, 2] >= low, avg[:, 2] < high)]
+        self.avg_raster = avg
         avg_x, avg_y, avg_z = avg.T
         # interpolate through avg to get 'cross section' using
         # bivariate spline (bisplrep)
         # tck = interpolate.bisplrep(avg_x, avg_y, avg_z, s=0)
-        interp_func = interpolate.interp2d(avg_x, avg_y, avg_z, kind='cubic')
+        # interp_func = interpolate.interp2d(avg_x, avg_y, avg_z, kind='cubic')
+        # interp_func = interpolate.LinearNDInterpolator(avg[:, :2], avg[:, 2])
+        interp_func = interpolate.LinearNDInterpolator(avg[:, :2], avg[:, 2])
         # import pdb
         # pdb.set_trace()
-        z_new = []
-        for num, (xx, yy) in enumerate(zip(x, y)):
-            # z_new += [interpolate.bisplev(xx, yy, tck)]
-            z_new.append(interp_func(xx, yy))
-            print_progress(num, len(x))
-        self.surface = np.array(z_new)[:, 0]
+        z_new = interp_func(x, y)
+        no_nans = np.isnan(z_new) == False
+        self.pts = self.pts[no_nans]
+        self.polar = self.polar[no_nans]
+        self.x, self.y, self.z = self.pts.T
+        self.theta, self.phi, self.radii = self.polar.T
+        self.surface = z_new[no_nans]
 
     def get_polar_cross_section(self, thickness=.1, pixel_length=.01):
         """Find best fitting surface of radii using phis and thetas."""
@@ -353,6 +361,7 @@ class Points():
 
     def save(self, fn):
         """Save using pickle."""
+        self.latest_fn = fn
         with open(fn, "wb") as pickle_file:
             pickle.dump(self, pickle_file)
 
@@ -371,13 +380,14 @@ ftypes = ";;".join(ftypes)
 class fileSelector(QWidget):
     """Offer a file selection dialog box filtering common image filetypes."""
 
-    def __init__(self, filetypes=ftypes, app=None):
+    def __init__(self, filetypes=ftypes, app=None,
+                 title='Select the images you want to process.'):
         if app is None:
             self.app = QApplication.instance()
         if self.app is None:
             self.app = QApplication([])
         super().__init__()
-        self.title = 'Select the images you want to process.'
+        self.title = title
         self.left = 10
         self.top = 10
         self.width = 640
@@ -396,9 +406,43 @@ class fileSelector(QWidget):
         # options |= QFileDialog.DontUseNativeDialog
         self.files, self.ftype = QFileDialog.getOpenFileNames(
             self,
-            "QFileDialog.getOpenFileNames()",
+            self.title,
             "",
             self.filetypes,
+            options=options)
+
+
+class folderSelector(QWidget):
+    """Offer a directory selection dialog box."""
+
+    def __init__(self, filetypes=ftypes, app=None,
+                 title='Select a folder'):
+        if app is None:
+            self.app = QApplication.instance()
+        if self.app is None:
+            self.app = QApplication([])
+        super().__init__()
+        self.title = title
+        self.left = 10
+        self.top = 10
+        self.width = 640
+        self.height = 480
+        self.filetypes = filetypes
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle(self.title)
+        self.setGeometry(self.left, self.top, self.width, self.height)
+        self.openDialog()
+        self.show()
+
+    def openDialog(self):
+        options = QFileDialog.Options()
+        # options |= QFileDialog.DontUseNativeDialog
+        self.folder = QFileDialog.getExistingDirectory(
+            self,
+            self.title,
+            "",
             options=options)
 
 
@@ -412,6 +456,7 @@ class stackFilter():
         if self.app is None:
             self.app = QApplication([])
         self.fns = fns
+        self.folder = os.path.dirname(self.fns[0])
         imgs = []
         print("Loading images:\n")
         for num, fn in enumerate(fns):
@@ -419,8 +464,9 @@ class stackFilter():
                 imgs += [load_image(fn)]
             except:
                 print(f"{fn} failed to load.")
+                imgs += [np.zeros(imgs[-1].shape)]
             print_progress(num, len(fns))
-
+        print("\n")
         assert len(imgs) > 0, "All images failed to load."
         self.imgs = np.array(imgs, dtype=np.uint16)
 
@@ -431,27 +477,42 @@ class stackFilter():
             self.app = QApplication.instance()
             if self.app is None:
                 self.app = QApplication([])
-
-        self.image_UI = pg.image(self.imgs)  # use the image UI from pyqtgraph
+        # self.image_view = pg.ImageView()
+        # self.image_view.show()
+        # self.image_view.setImage(self.imgs)
+        # self.window = pg.GraphicsLayoutWidget()
+        # self.image_UI = self.window.addPlot()
+        self.image_UI = pg.image(self.imgs[:10].astype('uint8'))  
+        # use the image UI from pyqtgraph
         self.image_UI.setPredefinedGradient('greyclip')
         self.app.exec_()      # allow the application to run until closed
         # grab low and high bounds from UI
         self.low, self.high = self.image_UI.getLevels()
-        xs = np.array([], dtype='uint16')
-        ys = np.array([], dtype='uint16')
-        zs = np.array([], dtype='uint16')
+        # xs = np.array([], dtype='uint16')
+        # ys = np.array([], dtype='uint16')
+        # zs = np.array([], dtype='uint16')
 
         print("Extracting coordinate data: ")
-        for depth, img in enumerate(self.imgs):
-            y, x = np.where(
-                np.logical_and(img <= self.high, img >= self.low))
-            # y, x = np.where(image > 0)
-            z = np.repeat(depth, len(x))
-            xs = np.append(xs, x)
-            ys = np.append(ys, y)
-            zs = np.append(zs, z)
-            print_progress(depth + 1, len(self.imgs))
-
+        np.logical_and(self.imgs <= self.high, self.imgs > self.low,
+                       out=self.imgs)
+        self.imgs = self.imgs.astype(bool, copy=False)
+        try:
+            ys, xs, zs = np.where(self.imgs)
+        except:
+            print(
+                "coordinate data is too large. Using a hard drive memory map instead of RAM.")
+            self.imgs_memmap = np.memmap(os.path.join(self.folder, "volume.npy"),
+                                         mode='w+', shape=self.imgs.shape, dtype=bool)
+            self.imgs_memmap[:] = self.imgs[:]
+            del self.imgs
+            self.imgs = None
+            for depth, img in enumerate(self.imgs_memmap):
+                y, x = np.where(img)
+                z = np.repeat(depth, len(x))
+                xs = np.append(xs, x)
+                ys = np.append(ys, y)
+                zs = np.append(zs, z)
+                print_progress(depth + 1, len(self.imgs))
         self.arr = np.array([xs, ys, zs], dtype=np.uint16).T
 
     def pre_filter(self):
@@ -488,42 +549,42 @@ class ScatterPlot3d():
 
     def __init__(self, arr, color=None, size=1, app=None, window=None,
                  colorvals=None, cmap=plt.cm.viridis):
-
         self.arr = arr
-        if app is None:
-            self.app = QApplication.instance()
+        self.app = app
         if self.app is None:
-            self.app = QApplication([])
+            self.app = QApplication.instance()
         self.color = color
         self.cmap = cmap
         self.size = size
         self.app = app
         self.window = window
-
         self.n, self.dim = self.arr.shape
         assert self.dim == 3, ("Input array should have shape "
                                "N x 3. Instead it has "
                                "shape {} x {}.".format(
                                    self.n,
                                    self.dim))
-        if isinstance(self.color, (tuple, list)):
-            self.color = np.array(self.color)
-        elif self.color is None and colorvals is None:
-            colorvals = np.ones(self.arr.shape[0])
-        if self.color is None and colorvals is not None:
-            colorvals = (colorvals - colorvals.min()) / \
-                (colorvals.max() - colorvals.min())
+        if colorvals is not None:
+            assert len(colorvals) == self.n, print("input colorvals should "
+                                                   "have the same lengths as "
+                                                   "input array")
+            if np.any(colorvals < 0) or np.any(colorvals > 1):
+                colorvals = (colorvals - colorvals.min()) / \
+                    (colorvals.max() - colorvals.min())
             self.color = np.array([self.cmap(c) for c in colorvals])
-        if self.color.max() > 1:
-            self.color = self.color / self.color.max()
-
+        elif color is not None:
+            assert len(color) == 4, print("color input should be a list or tuple "
+                                          "of RGBA values between 0 and 1")
+            if isinstance(self.color, (tuple, list)):
+                self.color = np.array(self.color)
+            if self.color.max() > 1:
+                self.color = self.color / self.color.max()
+            self.color = tuple(self.color)
+        else:
+            self.color = (1, 1, 1, 1)
         self.plot()
 
     def plot(self):
-        if self.app is None:
-            self.app = QApplication.instance()
-            if self.app is None:
-                self.app = QApplication([])
         if self.window is None:
             self.window = gl.GLViewWidget()
             self.window.setWindowTitle("3D Scatter Plot")
@@ -532,6 +593,8 @@ class ScatterPlot3d():
         self.window.addItem(self.scatter_GUI)
 
     def show(self):
+        if self.app is None:
+            self.app = QApplication([])
         self.window.show()
         self.app.exec_()
 
@@ -682,18 +745,247 @@ def filter_and_preview_images(fns):
     return eye
 
 
-def pre_filter():
-    file_UI = fileSelector()
-    file_UI.close()
-    fns = file_UI.files
+def make_directory(folder):
+    if not os.path.exists(folder):
+        os.mkdir(folder)
 
+
+class Benchmark():
+    def __init__(self, filename, function, folder=False, name=None):
+        self.filename = filename
+        self.function = function
+        self.folder = folder
+        self.name = name
+        if self.name is None:
+            self.name = os.path.basename(self.filename)
+        if self.folder:
+            self.statement = f"{self.name} Would you like to load files from {os.path.basename(self.filename)} and continue?"
+        else:
+            self.statement = f"{self.name} Would you like to load {os.path.basename(self.filename)} and continue?"
+
+    def exists(self):
+        if self.folder:
+            if os.path.isdir(self.filename):
+                fns = os.listdir(self.filename)
+                return len(fns) > 1
+            else:
+                return False
+        else:
+            if os.path.exists(self.filename):
+                return os.stat(self.filename).st_size > 0
+            else:
+                return False
+
+    def load(self):
+        if self.folder:
+            return self.filename
+        elif self.filename.endswith(".npy"):
+            return np.load(self.filename)
+        elif self.filename.endswith(".points"):
+            return load_Points(self.filename)
+        elif self.filename.split(".")[-1] in img_filetypes:
+            return load_image(self.filename)
+        elif self.filename.endswith(".csv"):
+            return pd.read_csv(self.filename)
+
+
+def init():
+    # choose your project directory
+    folder_UI = folderSelector(
+        title='Choose the folder containing the original image stack: ')
+    folder_UI.close()
+    home_folder = folder_UI.folder
+    project_folder = os.path.join(home_folder, "compound_eye_data")
+    make_directory(project_folder)
+    custom_filenames = [
+        "prefiltered_stack",
+        "coordinates.points",
+        "cross_section_raster.png",
+        "ommatidia_centers.points",
+        "ommatidia_clusters",
+        "ommatidia_measurements.csv",
+        "inter_ommatidial_measurements.csv",
+        "whole_eye_measurements.csv"]
+    custom_names = [
+        'Image stack was prefiltered.',
+        '3D coordinates were processed.',
+        'The cross section was rasterized.',
+        'Ommatidia centers were extracted.',
+        'Ommatidia clusters were found.',
+        'Ommatidial measurements were calculated.',
+        'Inter-ommatidial measurements were calculated.',
+        'Whole eye measurements were calculated.']
+    functions = [
+        pre_filter,             # optional
+        import_stack,           # works even if no prefilter
+        get_cross_section,
+        find_ommatidia_centers,
+        find_ommatidia_clusters,
+        get_ommatidial_measurements,
+        get_interommatidial_measurements,
+        get_whole_eye_measurements,
+        close]
+    folders = ["." not in os.path.basename(fn) for fn in custom_filenames]
+    benchmarks = []
+    for filename, function, folder, name in zip(custom_filenames,
+                                                functions,
+                                                folders,
+                                                custom_names):
+        if folder:
+            benchmark_fn = os.path.join(home_folder, filename)
+        else:
+            benchmark_fn = os.path.join(project_folder, filename)
+        benchmarks.append(
+            Benchmark(benchmark_fn, function,
+                      folder, name))
+    progress = 0
+    benchmarks_present = [mark for mark in benchmarks if mark.exists()]
+    # check what is the last benchmark done; start from there?
+    # if no, offer all accomplished benchmarks to start from
+    # this is nice because it will be the start screen for new projects
+    print("The following benchmarks were found:")
+    for num, mark in enumerate(benchmarks_present):
+        print(f"{num+1}. {mark.statement}")
+    choice = None
+    while choice not in np.arange(len(functions)).astype(str):
+        choice = input(
+            "Press the number to continue from that benchmark or press <0> to go to the main menu: ")
+    choice = int(choice)
+    if choice == 0:
+        print("Main Menu\n"
+              "0. Pre-filter an image stack\n"
+              "1. Import and filter an image stack as is\n")
+        choice = None
+        while choice not in ['0', '1']:
+            choice = input(
+                "Choose by entering the number to the left: ")
+        if choice == '0':
+            pre_filter(home_folder)
+            return
+    progress = int(choice)
+    functions = functions[progress:]
+    benchmark = benchmarks[progress - 1].load()
+    print("Would you like to preview the outcome of each step? ")
+    preview = None
+    while preview not in ['0', '1']:
+        preview = input("Press <1> for yes and <0> for no. ")
+    preview = preview == '1'
+    input_val = benchmark
+    for function in functions:
+        input_val = function(input_val, preview)
+
+
+def pre_filter(home_folder):
+    fns = os.listdir(home_folder)
     SF = stackFilter(fns)
     SF.pre_filter()
+    return home_folder
+
+
+img_filetypes = ['tiff', 'tff', 'tif', 'jpeg', 'jpg', 'png', 'bmp']
+
+
+def import_stack(folder, preview=True):
+    # return coordinates as a Points object
+    basename = os.path.basename(folder)
+    if basename == 'prefiltered_stack':
+        prefilter_folder = folder
+        home_folder = os.path.dirname(folder)
+    else:
+        home_folder = folder
+        prefilter_folder = os.path.join(folder, "prefiltered_stack")
+    if os.path.isdir(prefilter_folder):
+        fns = os.listdir(prefilter_folder)
+        fns = [fn for fn in fns if fn.split(".")[-1].lower() in img_filetypes]
+        assert len(fns) > 1, print(
+            "The folder prefilter_stack has no image files.")
+        filenames = [os.path.join(prefilter_folder, fn) for fn in fns]
+    else:
+        fns = os.listdir(home_folder)
+        fns = [fn for fn in fns if fn.split(".")[-1].lower() in img_filetypes]
+        assert len(fns) > 1, print(
+            f"The home folder, {home_folder}, has no image files.")
+        filenames = [os.path.join(home_folder, fn) for fn in fns]
+    filenames.sort()
+    # use stackFilter GUI to filter the stack of images based on contrast values
+    save = False
+    while save is False:
+        eye = None
+        if eye is None:
+            eye = filter_and_preview_images(filenames)
+        # 3d scatter plot of the included coordinates
+        if preview:
+            scatter = ScatterPlot3d(eye.pts)
+            scatter.show()
+        print("Save and continue? ")
+        response = None
+        while response not in ['0', '1']:
+            response = input("Press <1> for yes or <0> to load "
+                             "and filter the images again? ")
+        save = response == '1'
+    eye.save(os.path.join(home_folder, "compound_eye_data", "coordinates.points"))
+    return eye
+
+
+def get_cross_section(eye, preview=True, thickness=.8):
+    save = False
+    while save is False:
+        eye.get_polar_cross_section(thickness=thickness)
+        cross_section = eye.cross_section
+        # this part is very slow. can we perform it on just a subset of the points?
+        if preview:
+            img = cross_section.rasterize()
+            plt.imshow(img)
+            plt.show()
+        response = None
+        print("Save and continue? ")
+        while response not in ['0', '1']:
+            response = input("Press <1> for yes or <0> to extract "
+                             "the cross section using a different thickness?")
+        if response == "1":
+            save = True
+        else:
+            thickness = inf
+            while not np.logical_and(thickness >= 0, thickness <= 1):
+                thickness = input("What proportion of thickness (from 0 to 1) should "
+                                  "we use?")
+                try:
+                    thickness = float(thickness)
+                except:
+                    thickness = inf
+    eye.save(eye.latest_fn)
+    project_folder = os.path.basename(eye.latest_fn)
+    save_image(cross_section,
+               os.path.join(project_folder, "cross_section_raster.png"))
+    return cross_section
+
+
+def find_ommatidia_centers(cross_section_points, preview=True):
+    return
+
+
+def find_ommatidia_clusters():
+    return
+
+
+def get_ommatidial_measurements():
+    return
+
+
+def get_interommatidial_measurements():
+    return
+
+
+def get_whole_eye_measurements():
+    return
+
+
+def close():
+    return
 
 
 def main():
     # make a QApplication for the pyqt GUI
-    app = QApplication([])
     # TODO: main menu with buttons for different steps.
     # what follows is a typical pipeline
     # if user wants to skip ahead, they have to load a particular kind of file
@@ -924,6 +1216,7 @@ def main():
             dist, ind = tree.query(p, k=1)
             inds.append(ind)
             print_progress(num, total)
+        print("\n")
         inds = np.array(inds)
         cluster_centers = []
         clusters = []
@@ -1017,6 +1310,7 @@ def main():
                  children_pts, children_polar, n]):
             data_to_save[lbl] += [vals]
         print_progress(num, len(clusters))
+    print("\n")
     cone_cluster_data = pd.DataFrame.from_dict(data_to_save)
     cone_cluster_data.to_csv(filenames[5])
 
@@ -1146,7 +1440,7 @@ def main():
         cone.approx_FOV = np.mean(approx_IOAs)
         cone.anatomical_FOV = np.mean(anatomical_IOAs)
         print_progress(num, len(cones))
-
+    print("\n")
     with open(filenames[4], 'wb') as pickle_file:
         pickle.dump(clusters, pickle_file)
 
@@ -1173,12 +1467,13 @@ def main():
                  approx, anatomical]):
             data_to_save[lbl] += [vals]
         print_progress(num, len(pairs_tested))
+    print("\n")
     cone_pair_data = pd.DataFrame.from_dict(data_to_save)
     cone_pair_data.to_csv(filenames[4])
 
 
 if __name__ == "__main__":
-    main()
+    init()
 
 # eye = load_Points(
 #     "../../13460_tiff-stack-volume/prefiltered/eye_coordinates_Points.pkl")

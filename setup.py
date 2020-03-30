@@ -18,18 +18,17 @@ setup(
     'measurements (inter-ommatidial angle, ommatidial area, ommatia count, etc.).',
     long_description=open('README.txt').read(),
     install_requires=[
-        'numpy',
+        'fly_eye',
         'matplotlib',
-        'scipy',
+        'numpy',
         'pandas',
+        'pillow',
         'pyqt5',
         'PyOpenGL',
         'pyqtgraph',
-        'pillow',
-        'sty',
-        'hdbscan'
+        'scipy',
     ],
     dependency_links=[
-        'git+https://github.com/scikit-learn-contrib/hdbscan.git#egg=hdbscan'
+        'git+https://github.com/jpcurrea/fly_eye.git#egg=fly_eye'
         ]
 )
