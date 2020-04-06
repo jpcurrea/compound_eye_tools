@@ -258,7 +258,8 @@ class Points():
         return len(self.x)
 
     def __getitem__(self, key):
-        out = Points(self.pts[key], polar=self.polar[key])
+        out = Points(self.pts[key], polar=self.polar[key],
+                     rotate_com=False, spherical_conversion=False)
         return out
 
     def spherical(self, center=None):
@@ -1026,6 +1027,7 @@ def find_ommatidia_centers(cross_section, preview=True, **kwargs):
     project_folder = os.path.dirname(cross_section.latest_fn)
     if 'app' in kwargs.keys():
         app = kwargs['app']
+    eye = load_Points(os.path.join(project_folder, "coordinates.points"))
     # segment the cross section into polar squares of size pi x pi
     # find range of theta and phi
     theta_range = cross_section.theta.max() - cross_section.theta.min()  # max = pi
@@ -1043,61 +1045,136 @@ def find_ommatidia_centers(cross_section, preview=True, **kwargs):
     phi_centers = (phi_boundaries + phi_length/2)[:-1]
     theta_pad, phi_pad = .1 * theta_length, .1 * phi_length
     # go through each segment and process ommatidia centers
-    thetas = []
-    phis = []
-    for theta_min, theta_center, theta_max, phi_min, phi_center, phi_max in zip(
-            theta_boundaries[:-1], theta_centers, theta_boundaries[1:],
-            phi_boundaries[:-1], phi_centers, phi_boundaries[1:]):
-        inds = ((cross_section.theta > theta_min - theta_pad) *
-                (cross_section.theta < theta_max + theta_pad) *
-                (cross_section.phi > phi_min - phi_pad) *
-                (cross_section.phi < phi_max + phi_pad))
-        cross_section_segment = cross_section.pts[inds]
-        phi_displacement = phi_center - np.pi
-        theta_displacement = theta_center - np.pi/2
-        rot = rotate(cross_section_segment, phi_displacement, axis=2).T
-        rot = rotate(rot, theta_displacement, axis=1).T
-        # to rotate back to original points:
-        # rot = rotate(rot, -theta_displacement, axis=1).T
-        # rot = rotate(rot, -phi_displacement, axis=2).T
-        # plot points before and after rotations to see if it worked properly
-        polar0 = cartesian_to_spherical(cross_section_segment)
-        polar1 = cartesian_to_spherical(rot)
-        plt.scatter(polar0[:, 0], polar0[:, 1], c=polar0[:, 2])
-        plt.scatter(polar1[:, 0], polar1[:, 1], c=polar1[:, 2])
-        plt.show()
-        segment = Points(rot, rotate_com=False)
-        while not save:
-            # 3. use low pass filter method from Eye object in fly_eye to find
-            # centers of cone clusters/ommatidia.
-            # a. rasterize the image so that we can use our image processing
-            # algorithm in fly_eye
+    inner_shell = eye.residuals < 0
+    outer_shell = eye.residuals >= 0
+    clusters = []
+    cluster_centers = []
+    while not save:
+        for cross_section in [eye[inner_shell], eye[outer_shell]]:
+            thetas = []
+            phis = []
+            segment_image_size = image_size / (theta_num_segments * phi_num_segments)
+            print("Processing segments of the polar coordinates: ")
+            for theta_ind, (theta_min, theta_center, theta_max) in enumerate(zip(
+                    theta_boundaries[:-1], theta_centers, theta_boundaries[1:])):
+                for phi_ind, (phi_min, phi_center, phi_max) in enumerate(zip(
+                        phi_boundaries[:-1], phi_centers, phi_boundaries[1:])):
+                    inds = ((cross_section.theta > theta_min - theta_pad) *
+                            (cross_section.theta < theta_max + theta_pad) *
+                            (cross_section.phi > phi_min - phi_pad) *
+                            (cross_section.phi < phi_max + phi_pad))
+                    cross_section_segment = cross_section.pts[inds]
+                    phi_displacement = phi_center - np.pi
+                    theta_displacement = theta_center - np.pi/2
+                    rot = rotate(cross_section_segment, phi_displacement, axis=2).T
+                    rot = rotate(rot, theta_displacement, axis=1).T
+                    # to rotate back to original points:
+                    # rot = rotate(rot, -theta_displacement, axis=1).T
+                    # rot = rotate(rot, -phi_displacement, axis=2).T
+                    # plot points before and after rotations to see if it worked properly
+                    # polar0 = cartesian_to_spherical(cross_section_segment)
+                    polar1 = cartesian_to_spherical(rot)
+                    # plt.scatter(polar0[:, 0], polar0[:, 1], c=polar0[:, 2])
+                    # plt.scatter(polar1[:, 0], polar1[:, 1], c=polar1[:, 2])
+                    # plt.show()
+                    segment = Points(rot, rotate_com=False, polar=polar1,
+                                     spherical_conversion=False)
+                    # 3. use low pass filter method from Eye object in fly_eye to find
+                    # centers of cone clusters/ommatidia.
+                    # a. rasterize the image so that we can use our image processing
+                    # algorithm in fly_eye
 
-            # print("Rasterizing polar projection of the cross section: ")
-            # img, (xvals, yvals) = cross_section.rasterize(image_size=image_size)
-            img, (theta_vals, phi_vals) = segment.rasterize(image_size=image_size)
-            mask = img > 0
-            mask = convex_hull_image(mask)
-            cross_section_eye = fe.Eye(img, pixel_size=segment.raster_pixel_length,
-                                       mask=mask)
-            cross_section_eye.theta_vals, cross_section_eye.phi_vals = theta_vals, phi_vals
-            cross_section_eye.get_ommatidia()
+                    # print("Rasterizing polar projection of the cross section: ")
+                    # img, (xvals, yvals) = cross_section.rasterize(image_size=image_size)
+                    img, (theta_vals, phi_vals) = segment.rasterize(image_size=segment_image_size)
+                    mask = img > 0
+                    mask = convex_hull_image(mask)
+                    cross_section_eye = fe.Eye(img, pixel_size=segment.raster_pixel_length,
+                                               mask=mask)
+                    cross_section_eye.theta_vals, cross_section_eye.phi_vals = theta_vals, phi_vals
+                    cross_section_eye.get_ommatidia(
+                        max_facets=35000/(theta_num_segments * phi_num_segments))
+                    segment_phis, segment_thetas = cross_section_eye.ommatidia
+                    segment_thetas += theta_vals.min()
+                    segment_phis += phi_vals.min()
+                    # if preview:
+                    #     plt.pcolormesh(theta_vals, phi_vals, img.T)
+                    #     plt.scatter(segment_thetas, segment_phis, color='r', marker='.')
+                    #     plt.gca().set_aspect('equal')
+                    #     plt.tight_layout()
+                    #     plt.xlabel("polar angle (theta)")
+                    #     plt.ylabel("azimuthal angle (phi)")
+                    #     plt.show()
+                    segment_polar = np.array([segment_thetas, segment_phis, np.ones(len(segment_phis))]).T
+                    segment_pts = spherical_to_cartesian(segment_polar)
+                    rot = rotate(segment_pts, -theta_displacement, axis=1).T
+                    rot = rotate(rot, -phi_displacement, axis=2).T
+                    polar1 = cartesian_to_spherical(rot)
+                    theta, phi, _ = polar1.T
+                    within_bounds = ((theta >= theta_min) *
+                                     (theta < theta_max) *
+                                     (phi >= phi_min) *
+                                     (phi < phi_max))
+                    thetas += [theta[within_bounds]]
+                    phis += [phi[within_bounds]]
+                    # polar0 = cartesian_to_spherical(cross_section_segment)
+                    # # plt.scatter(segment_polar[:, 0], segment_polar[:, 1], color='b')
+                    # plt.scatter(polar0[:, 0], polar0[:, 1], color='b')
+                    # plt.scatter(polar1[:, 0], polar1[:, 1], color='g')
+                    # plt.show()
+                    # cross_section.save(cross_section.latest_fn)
+                    print_progress(theta_ind * phi_num_segments + phi_ind + 1,
+                                   theta_num_segments * phi_num_segments)
+            thetas = np.concatenate(thetas)
+            phis = np.concatenate(phis)
+            img, (theta_vals, phi_vals) = cross_section.rasterize(image_size=image_size)
             if preview:
-                phs, ths = np.copy(cross_section_eye.ommatidia)
-                ths += cross_section_eye.theta_vals.min()
-                phs += cross_section_eye.phi_vals.min()
-                ps = cross_section.raster_pixel_length
                 plt.pcolormesh(theta_vals, phi_vals, img.T)
-                plt.scatter(ths, phs, color='r', marker='.')
+                plt.scatter(thetas, phis, color='r', marker='.')
                 plt.gca().set_aspect('equal')
-                # plt.imshow(img)
                 plt.tight_layout()
                 plt.xlabel("polar angle (theta)")
                 plt.ylabel("azimuthal angle (phi)")
-                # plt.xticks([])
-                # plt.yticks([])
-                # plt.scatter(phs/ps, ths/ps, color='r', marker='.')
                 plt.show()
+            print("Finding clusters of points near ommatidia centers: ")
+            # recenter the points
+            centers = np.array([thetas, phis]).T
+            # find clusters here and now! by finding point nearest each center
+            tree = spatial.KDTree(centers)
+            dists, inds = [], []
+            # this takes a lot of time and RAM so break it into chunks
+            chunks = int(np.round(cross_section.polar.shape[0] / 10**4))
+            chunks = np.array_split(cross_section.polar[:, :2], chunks, axis=0)
+            for num, coords in enumerate(chunks):
+                d, i = tree.query(coords, k=1)
+                dists += [d]
+                inds += [i]
+                print_progress(num + 1, len(chunks))
+            inds = np.concatenate(inds)
+            # get random colorvals for scatterplot
+            # radii = cross_section.interp_func(centers[:, 0], centers[:, 1])
+            # no_nans = np.isnan(radii) == False
+            # centers = np.array([centers[:, 0], centers[:, 1], radii]).T
+            # centers = centers[no_nans]
+            # cluster_centers = spherical_to_cartesian(centers)
+            if preview:
+                cvals = {}
+                rand_vals = np.random.choice(list(set(inds)), len(set(inds)), replace=False)
+                for val, rand_val in zip(set(inds), rand_vals):
+                    cvals[val] = rand_val
+                color_vals = np.array([cvals[ind] for ind in  inds])
+                polar_scatter = ScatterPlot3d(cross_section.pts, app=app,
+                                              colorvals=color_vals, cmap=plt.cm.tab20)
+                polar_scatter.show()
+                # polar_scatter = ScatterPlot3d(cross_section.pts, app=app, color=(1, 1, 1, .25))
+                # centers_scatter = ScatterPlot3d(cluster_centers, app=app,
+                #                                 window=polar_scatter.window,
+                #                                 color=(1, 0, 0, 1), size=10)
+                # centers_scatter.show()
+            segment_clusters = []
+            for ind in sorted(set(inds)):
+                i = inds == ind
+                segment_clusters += [cross_section[i]]
             print("Continue with this image size? ")
             response = None
             while response not in ['0', '1']:
@@ -1113,67 +1190,6 @@ def find_ommatidia_centers(cross_section, preview=True, **kwargs):
                         success = True
                     except:
                         image_size = input("The response must be a whole number: ")
-                cross_section.raster = None
-        # cross_section.save(cross_section.latest_fn)
-        save = False
-        while not save:
-            # min_facets = input("What is the lowest possible number of ommatidia? ")
-            # while isinstance(min_facets, int) is False:
-            #     try:
-            #         min_facets = int(min_facets)
-            #     except:
-            #         min_facets = input(
-            #             "The number of ommatidia should be a whole number. ")
-            # max_facets = input("What is the largest possible number of ommatidia? ")
-            # while isinstance(max_facets, int) is False:
-            #     try:
-            #         max_facets = int(max_facets)
-            #     except:
-            #         max_facets = input(
-            #             "The number of ommatidia should be a whole number. ")
-            # c. use low pass algorithm from fly_eye on the rasterized image
-            # cross_section_eye.mask = mask
-            # cross_section_eye.get_ommatidia(
-            #     min_facets=min_facets, max_facets=max_facets)
-            # cross_section_eye.get_ommatidia()
-            # ys, xs = cross_section_eye.ommatidia
-            # if preview:
-            #     ps = cross_section.raster_pixel_length
-            #     fig = plt.figure(figsize=(10, 8))
-            #     plt.imshow(img)
-            #     plt.scatter(ys/ps, xs/ps, marker='.', color=red)
-            #     plt.yticks([])
-            #     plt.xticks([])
-            #     plt.tight_layout()
-            #     plt.savefig(os.path.join(project_folder, "ommatidia_centers.svg"))
-            #     plt.savefig(os.path.join(project_folder, "ommatidia_centers.png"), dpi=300)
-            #     plt.show()
-            # recenter the points
-            centers = np.array(
-                [xs + cross_section_eye.theta_vals.min(),
-                 ys + cross_section_eye.phi_vals.min()]).T
-            centers = np.array(
-                [xs + cross_section_eye.theta_vals.min(),
-                 ys + cross_section_eye.phi_vals.min()]).T
-            # this can be sped up if we assume the centers are at a fixed
-            # radius from the center. the next step, using hdbscan actually
-            # accounts for variability in radial distances from the 
-            radii = cross_section.interp_func(centers[:, 0], centers[:, 1])
-            no_nans = np.isnan(radii) == False
-            centers = np.array([centers[:, 0], centers[:, 1], radii]).T
-            centers = centers[no_nans]
-            cluster_centers = spherical_to_cartesian(centers)
-            if preview:
-                polar_scatter = ScatterPlot3d(cross_section.pts, app=app, color=(1, 1, 1, .25))
-                centers_scatter = ScatterPlot3d(cluster_centers, app=app,
-                                                window=polar_scatter.window,
-                                                color=(1, 0, 0, 1), size=10)
-                centers_scatter.show()
-            response = None
-            while response not in ['0', '1']:
-                response = input(
-                    "Press <1> to save or <0> to reprocess using different ommatidia limits: ")
-            save = response == '1'
     np.save(os.path.join(project_folder, "ommatidia_centers.npy"),
             cluster_centers)
     return cluster_centers
