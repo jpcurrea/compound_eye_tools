@@ -1,4 +1,3 @@
-import hdbscan
 import math
 import numpy as np
 from numpy import linalg as LA
@@ -180,10 +179,28 @@ def angle_between_skew_vectors(
     c2 = p2 + np.dot((np.dot((p1 - p2), n1)/(np.dot(d2, n1))), d2)
     midpoint = np.mean([c1, c2], axis=0)
     centered_p1, centered_p2 = p1 - midpoint, p2 - midpoint
-    c1, c2 = centered_p1, centered_p2
-    theta = np.arccos(
-        np.dot(c1, c2)/(LA.norm(c1) * LA.norm(c2)))
+    theta = angle_between(centered_p1, centered_p2)
     return theta
+
+
+def skew_vector_intersection(
+        position_vector_1, direction_vector_1,
+        position_vector_2, direction_vector_2):
+    """uses derivation from
+    https://en.wikipedia.org/wiki/Skew_lines#Nearest_Points
+    """
+    p1, d1 = position_vector_1, direction_vector_1
+    p2, d2 = position_vector_2, direction_vector_2
+    n = np.cross(d1, d2)
+    n1, n2 = np.cross(d1, n), np.cross(d2, n)
+    c1 = p1 + np.dot((np.dot((p2 - p1), n2)/(np.dot(d1, n2))), d1)
+    c2 = p2 + np.dot((np.dot((p1 - p2), n1)/(np.dot(d2, n1))), d2)
+    midpoint = np.mean([c1, c2], axis=0)
+    # centered_p1, centered_p2 = p1 - midpoint, p2 - midpoint
+    # c1, c2 = centered_p1, centered_p2
+    # theta = np.arccos(
+    #     np.dot(c1, c2)/(LA.norm(c1) * LA.norm(c2)))
+    return midpoint
 
 
 def load_Points(fn):
@@ -855,7 +872,6 @@ def main():
         find_ommatidia_clusters,
         get_ommatidial_measurements,
         get_interommatidial_measurements,
-        get_whole_eye_measurements,
         close]
     folders = ["." not in os.path.basename(fn) for fn in custom_filenames]
     benchmarks = []
@@ -895,7 +911,7 @@ def main():
         if choice == '0':
             pre_filter(home_folder)
             return
-    progress = int(choice)
+        progress = int(choice)
     functions = functions[progress:]
     benchmark = benchmarks[progress - 1].load()
     print("Would you like to preview the outcome of each step? ")
@@ -1018,7 +1034,7 @@ def get_cross_section(eye, preview=True, thickness=.3, **kwargs):
 def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     save = False
     # pixel_length = .001
-    image_size = 10**6
+    image_size = 10**5
     # find pixel size for a given image size
     if 'project_folder' in kwargs.keys():
         project_folder = kwargs['project_folder']
@@ -1047,6 +1063,8 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     outer_shell = eye.residuals >= 0
     labels = []
     dist_trees = []
+    minimum_facets = 500
+    maximum_facets = 20000
     for cross_section in [eye[inner_shell], eye[outer_shell]]:
         save = False
         while not save:
@@ -1058,47 +1076,87 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
                     theta_boundaries[:-1], theta_centers, theta_boundaries[1:])):
                 for phi_ind, (phi_min, phi_center, phi_max) in enumerate(zip(
                         phi_boundaries[:-1], phi_centers, phi_boundaries[1:])):
-                    inds = ((cross_section.theta > theta_min - theta_pad) *
-                            (cross_section.theta < theta_max + theta_pad) *
-                            (cross_section.phi > phi_min - phi_pad) *
-                            (cross_section.phi < phi_max + phi_pad))
-                    cross_section_segment = cross_section.pts[inds]
-                    phi_displacement = phi_center - np.pi
-                    theta_displacement = theta_center - np.pi/2
-                    rot = rotate(cross_section_segment, phi_displacement, axis=2).T
-                    rot = rotate(rot, theta_displacement, axis=1).T
-                    polar1 = cartesian_to_spherical(rot)
-                    segment = Points(rot, rotate_com=False, polar=polar1,
-                                     spherical_conversion=False)
-                    # 3. use low pass filter method from Eye object in fly_eye to find
-                    # centers of cone clusters/ommatidia.
-                    # a. rasterize the image so that we can use our image processing
-                    # algorithm in fly_eye
-                    img, (theta_vals, phi_vals) = segment.rasterize(image_size=segment_image_size)
-                    mask = img > 0
-                    mask = convex_hull_image(mask)
-                    cross_section_eye = fe.Eye(img, pixel_size=segment.raster_pixel_length,
-                                               mask=mask)
-                    cross_section_eye.theta_vals, cross_section_eye.phi_vals = theta_vals, phi_vals
-                    cross_section_eye.get_ommatidia(
-                        max_facets=35000/(theta_num_segments * phi_num_segments))
-                    segment_phis, segment_thetas = cross_section_eye.ommatidia
-                    segment_thetas += theta_vals.min()
-                    segment_phis += phi_vals.min()
-                    segment_polar = np.array([segment_thetas, segment_phis, np.ones(len(segment_phis))]).T
-                    segment_pts = spherical_to_cartesian(segment_polar)
-                    rot = rotate(segment_pts, -theta_displacement, axis=1).T
-                    rot = rotate(rot, -phi_displacement, axis=2).T
-                    polar1 = cartesian_to_spherical(rot)
-                    theta, phi, _ = polar1.T
-                    within_bounds = ((theta >= theta_min) *
-                                     (theta < theta_max) *
-                                     (phi >= phi_min) *
-                                     (phi < phi_max))
-                    thetas += [theta[within_bounds]]
-                    phis += [phi[within_bounds]]
-                    print_progress(theta_ind * phi_num_segments + phi_ind + 1,
-                                   theta_num_segments * phi_num_segments)
+                    cont = False
+                    while not cont:
+                        inds = ((cross_section.theta > theta_min - theta_pad) *
+                                (cross_section.theta < theta_max + theta_pad) *
+                                (cross_section.phi > phi_min - phi_pad) *
+                                (cross_section.phi < phi_max + phi_pad))
+                        cross_section_segment = cross_section.pts[inds]
+                        phi_displacement = phi_center - np.pi
+                        theta_displacement = theta_center - np.pi/2
+                        rot = rotate(cross_section_segment, phi_displacement, axis=2).T
+                        rot = rotate(rot, theta_displacement, axis=1).T
+                        polar1 = cartesian_to_spherical(rot)
+                        segment = Points(rot, rotate_com=False, polar=polar1,
+                                         spherical_conversion=False)
+                        # 3. use low pass filter method from Eye object in fly_eye to find
+                        # centers of cone clusters/ommatidia.
+                        # a. rasterize the image so that we can use our image processing
+                        # algorithm in fly_eye
+                        img, (theta_vals, phi_vals) = segment.rasterize(image_size=segment_image_size)
+                        mask = img > 0
+                        mask = convex_hull_image(mask)
+                        cross_section_eye = Eye(img, pixel_size=segment.raster_pixel_length,
+                                                mask=mask)
+                        cross_section_eye.theta_vals, cross_section_eye.phi_vals = theta_vals, phi_vals
+                        cross_section_eye.get_ommatidia(
+                            max_facets=maximum_facets / (theta_num_segments * phi_num_segments),
+                            min_facets=minimum_facets / (theta_num_segments * phi_num_segments),
+                            method=1)
+                        if cross_section_eye.ommatidia is not None:
+                            segment_phis, segment_thetas = cross_section_eye.ommatidia
+                            segment_thetas += theta_vals.min()
+                            segment_phis += phi_vals.min()
+                            segment_polar = np.array([segment_thetas, segment_phis, np.ones(len(segment_phis))]).T
+                            segment_pts = spherical_to_cartesian(segment_polar)
+                            rot = rotate(segment_pts, -theta_displacement, axis=1).T
+                            rot = rotate(rot, -phi_displacement, axis=2).T
+                            polar1 = cartesian_to_spherical(rot)
+                            theta, phi, _ = polar1.T
+                            within_bounds = ((theta >= theta_min) *
+                                             (theta < theta_max) *
+                                             (phi >= phi_min) *
+                                             (phi < phi_max))
+                            thetas += [theta[within_bounds]]
+                            phis += [phi[within_bounds]]
+                            if preview:
+                                plt.pcolormesh(theta_vals, phi_vals, img.T)
+                                plt.scatter(segment_thetas, segment_phis, color='r', marker='.')
+                                plt.gca().set_aspect('equal')
+                                plt.tight_layout()
+                                plt.xlabel("polar angle (theta)")
+                                plt.ylabel("azimuthal angle (phi)")
+                                plt.title("Eye Segment with Ommatidial Centers")
+                                plt.show()
+                            print("Continue with the same minimum and maximum ommatidial counts? ")
+                            response = None
+                            while response not in ['0', '1']:
+                                response = input("Press <1> for yes or <0> to analyze "
+                                                 "the image using a different limits: ")
+                            cont = response == '1'
+                        else:
+                            print("Failed to extract ommatidia. Choose new ommatidia count limits: ")
+                            cont = False
+                        if not cont:
+                            minimum_facets = input("What is the minimum number of ommatidia? ")
+                            success = False
+                            while success is False:
+                                try:
+                                    minimum_facets = int(minimum_facets)
+                                    success = True
+                                except:
+                                    minimum_facets = input("The response must be a whole number: ")
+                            maximum_facets = input("What is the maximum number of ommatidia? ")
+                            success = False
+                            while success is False:
+                                try:
+                                    maximum_facets = int(maximum_facets)
+                                    success = True
+                                except:
+                                    maximum_facets = input("The response must be a whole number: ")
+                        print_progress(theta_ind * phi_num_segments + phi_ind + 1,
+                                       theta_num_segments * phi_num_segments)
             print("\n")
             thetas = np.concatenate(thetas)
             phis = np.concatenate(phis)
@@ -1393,6 +1451,53 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
             neighbor_inds = [int(val) for val in neighbor_inds]
         else:
             neighbor_inds = cone.neighbor_inds
+        # find average point point of intersection of anatomical axes
+        # use as center point
+        approx_centers = []
+        anatomical_centers = []
+        position1 = np.array([cone.x_center, cone.y_center, cone.z_center])
+        # positions += [position1]
+        if isinstance(cone.approx_axis, str):
+            direction1 = np.array(cone.approx_axis[1:-1].split(",")).astype(float)
+        else:
+            direction1 = np.array(cone.approx_axis)
+        for neighbor_ind in neighbor_inds:
+            neighbor_cone = cone_cluster_data.loc[neighbor_ind]
+            position2 = np.array(
+                [neighbor_cone.x_center, neighbor_cone.y_center, neighbor_cone.z_center])
+            for centers, var in zip(
+                    [approx_centers, anatomical_centers],
+                    ['approx_axis', 'anatomical_axis']):
+                if isinstance(neighbor_cone.approx_axis, str):
+                    direction2 = np.array(neighbor_cone[var][1:-1].split(",")).astype(float)
+                else:
+                    direction2 = np.array(neighbor_cone[var])
+                midpoint = skew_vector_intersection(
+                    position1, direction1, position2, direction2)
+                centers += [midpoint]
+        approx_centers = np.array(approx_centers)
+        anatomical_centers = np.array(anatomical_centers)
+        # centers -= center
+        # positions = np.array(positions)
+        # positions -= center
+        # directions = np.array(directions)
+        # center = np.array([0, 0, 0])[np.newaxis]
+        # scatter = ScatterPlot3d(centers, size=5, color=(0, 0, 1, 1), app=app)
+        # scatter2 = ScatterPlot3d(positions, size=5, color=(0, 1, 0, 1),
+        #                          app=app, window=scatter.window)
+        # scatter3 = ScatterPlot3d(center, size=10, color=(1, 1, 1, 1),
+        #                          app=app, window=scatter.window)
+        # magn = 5
+        # for position, direction in zip(positions, directions):
+        #     # plt1 = gl.GLLinePlotItem(pos=ptsa, color=(1, 0, 0, 1),
+        #     #                          width=5, antialias=True)
+        #     # scatter.window.addItem(plt1)
+        #     posa = position + magn/2 * direction
+        #     posb = position - magn/2 * direction
+        #     pos = np.array([posa, posb])
+        #     line = gl.GLLinePlotItem(pos=pos, color=(1, 1, 1, 1), width=3, antialias=True)
+        #     scatter3.window.addItem(line)
+        # scatter3.show()
         for neighbor in neighbor_inds:
             pair = tuple(sorted([num, neighbor]))
             if pair not in pairs_tested:
@@ -1416,9 +1521,12 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
                 else:
                     direction2 = np.array(neighbor_cone.anatomical_axis)
                 # get minimum angle between neighboring ommatidial axes
+                # center = skew_vector_intersection(
                 anatomical_angle = angle_between_skew_vectors(
                     position1, direction1,
                     position2, direction2)
+                # anatomical_angle = angle_between(
+                #     position1 - center, position2 - center)
                 if isinstance(cone.approx_axis, str):
                     direction1 = np.array(cone.approx_axis[1:-1].split(",")).astype(float)
                 else:
@@ -1430,6 +1538,11 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
                 approx_angle = angle_between_skew_vectors(
                     position1, direction1,
                     position2, direction2)
+                # center = skew_vector_intersection(
+                #     position1, direction1,
+                #     position2, direction2)
+                # approx_angle = angle_between(
+                #     position1 - center, position2 - center)
                 interommatidial_angle_anatomical[pair] = anatomical_angle
                 interommatidial_angle_approx[pair] = approx_angle
                 orientations_dict[pair] = orientation
