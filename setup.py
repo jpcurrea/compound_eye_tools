@@ -20,7 +20,6 @@ setup(
     long_description=open('README.txt').read(),
     install_requires=[
         'fly_eye',
-        'hdbscan',
         'matplotlib',
         'numpy',
         'pandas',
