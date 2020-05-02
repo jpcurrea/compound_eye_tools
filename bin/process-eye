@@ -1,0 +1,4 @@
+#!/usr/bin/env python
+
+import compound_eye_tools
+compound_eye_tools.main()
