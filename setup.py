@@ -34,5 +34,5 @@ setup(
     dependency_links=[
         'git+https://github.com/jpcurrea/fly_eye#egg=fly_eye-0.1',
     ],
-    scripts=['/bin/process-eye']
+    scripts=['process-eye']
 )
