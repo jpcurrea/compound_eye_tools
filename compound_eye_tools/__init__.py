@@ -494,6 +494,8 @@ class stackFilter():
         """Import images using fns, a list of filenames."""
         if app is None:
             self.app = QApplication.instance()
+        else:
+            self.app = app
         if self.app is None:
             self.app = QApplication([])
         self.fns = fns
@@ -522,6 +524,7 @@ class stackFilter():
     def contrast_filter(self):
         """Use pyqtgraph's image UI to select lower an upper bound contrasts."""
         # if there is no defined application instance, make one
+        
         if self.app is None:
             self.app = QApplication.instance()
             if self.app is None:
@@ -531,9 +534,13 @@ class stackFilter():
         # self.image_view.setImage(self.imgs)
         # self.window = pg.GraphicsLayoutWidget()
         # self.image_UI = self.window.addPlot()
-        self.image_UI = pg.image(self.imgs.astype('uint8'))  
+        self.imgs = self.imgs.astype('uint8')
+        self.image_UI = pg.image(self.imgs)
+        # self.image_UI = pg.ImageView()
+        # self.image_UI.setImage(self.imgs)
+        # self.image_UI.setPredefinedGradient('greyclip')
+        # self.image_UI.show()
         # use the image UI from pyqtgraph
-        self.image_UI.setPredefinedGradient('greyclip')
         self.app.exec_()      # allow the application to run until closed
         # grab low and high bounds from UI
         self.low, self.high = self.image_UI.getLevels()
@@ -572,7 +579,15 @@ class stackFilter():
             if self.app is None:
                 self.app = QApplication([])
 
-        self.image_UI = pg.image(self.imgs)  # use the image UI from pyqtgraph
+        # self.image_UI = pg.image(self.imgs)  # use the image UI from pyqtgraph
+        # create filter window
+        self.window = QtGui.QMainWindow()
+        self.window.resize(800, 800)
+        self.window.setWindowTitle("Filter Image Stack:")
+        self.window.show()
+        self.image_UI = pg.ImageView()
+        self.image_UI.setImage(self.imgs.astype('uint8'))
+        num_frames, width, height = self.imgs.shape
         self.image_UI.setPredefinedGradient('greyclip')
         self.app.exec_()      # allow the application to run until closed
         # grab low and high bounds from UI
@@ -780,9 +795,9 @@ class ScatterPlot2d():
         self.app.exec_()
 
 
-def filter_and_preview_images(fns):
+def filter_and_preview_images(fns, app):
     # use stackFilter GUI to filter the stack of images based on contrast values
-    SF = stackFilter(fns)
+    SF = stackFilter(fns, app=app)
     SF.contrast_filter()
     eye = SF.arr
     # 1. convert to spherical coordinates by fitting a sphere with OLS
@@ -900,6 +915,7 @@ def main():
         choice = input(
             "Press the number to continue from that benchmark or press <0> to go to the main menu: ")
     choice = int(choice)
+    progress = choice
     if choice == 0:
         print("Main Menu\n"
               "0. Pre-filter an image stack\n"
@@ -913,7 +929,7 @@ def main():
             return
         progress = int(choice)
     functions = functions[progress:]
-    benchmark = benchmarks[progress - 1].load()
+    benchmark = benchmarks[max(progress - 1, 0)].load()
     print("Would you like to preview the outcome of each step? ")
     preview = None
     while preview not in ['0', '1']:
@@ -974,7 +990,7 @@ def import_stack(folder, preview=True, **kwargs):
     while save is False:
         eye = None
         if eye is None:
-            eye = filter_and_preview_images(filenames)
+            eye = filter_and_preview_images(filenames, app=app)
         # 3d scatter plot of the included coordinates
         if preview:
             scatter = ScatterPlot3d(eye.pts, app=app)
@@ -1034,7 +1050,7 @@ def get_cross_section(eye, preview=True, thickness=.3, **kwargs):
 def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     save = False
     # pixel_length = .001
-    image_size = 10**5
+    image_size = 10**6.5
     # find pixel size for a given image size
     if 'project_folder' in kwargs.keys():
         project_folder = kwargs['project_folder']
@@ -1097,8 +1113,8 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
                         img, (theta_vals, phi_vals) = segment.rasterize(image_size=segment_image_size)
                         mask = img > 0
                         mask = convex_hull_image(mask)
-                        cross_section_eye = Eye(img, pixel_size=segment.raster_pixel_length,
-                                                mask=mask)
+                        cross_section_eye = fe.Eye(img, pixel_size=segment.raster_pixel_length,
+                                                   mask=mask)
                         cross_section_eye.theta_vals, cross_section_eye.phi_vals = theta_vals, phi_vals
                         cross_section_eye.get_ommatidia(
                             max_facets=maximum_facets / (theta_num_segments * phi_num_segments),
