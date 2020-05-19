@@ -23,6 +23,7 @@ import fly_eye as fe
 blue, green, yellow, orange, red, purple = [(0.30, 0.45, 0.69), (0.33, 0.66, 0.41), (
     0.83, 0.74, 0.37), (0.78, 0.50, 0.16), (0.77, 0.31, 0.32), (0.44, 0.22, 0.78)]
 
+app = QApplication([])
 
 def load_image(fn):
     """Import an image as a numpy array using the PIL."""
@@ -51,7 +52,7 @@ def print_progress(part, whole, bar=True):
     sys.stdout.flush()
 
 
-def fit_line(data, component=0):             # fit 3d line to 3d data
+def fit_line(data):             # fit 3d line to 3d data
     """Use singular value decomposition (SVD) to find the best fitting vector to the data.
 
 
@@ -63,7 +64,7 @@ def fit_line(data, component=0):             # fit 3d line to 3d data
     m = data.mean(0)
     max_val = np.round(2*abs(data - m).max()).astype(int)
     uu, dd, vv = np.linalg.svd(data - m)
-    return vv[component]
+    return vv
 
 
 def bootstrap_ci(arr, reps=1000, ci_range=[2.5, 97.5], stat_func=np.mean):
@@ -331,7 +332,7 @@ class Points():
         return self.raster, (xs, ys)
 
     # def fit_surface(self, mode='polar', outcome_axis=0, pixel_length=.01):
-    def fit_surface(self, mode='polar', outcome_axis=0, image_size=10**3):
+    def fit_surface(self, mode='polar', image_size=10**3):
         """Find cubic interpolation surface of one axis using the other two."""
         if mode == 'pts':
             arr = self.pts
@@ -372,7 +373,8 @@ class Points():
         # tck = interpolate.bisplrep(avg_x, avg_y, avg_z, s=0)
         # interp_func = interpolate.interp2d(avg_x, avg_y, avg_z, kind='cubic')
         # interp_func = interpolate.LinearNDInterpolator(avg[:, :2], avg[:, 2])
-        self.interp_func = interpolate.LinearNDInterpolator(avg[:, :2], avg[:, 2])
+        self.interp_func = interpolate.LinearNDInterpolator(
+            avg[:, :2], avg[:, 2])
         # import pdb
         # pdb.set_trace()
         z_new = self.interp_func(x, y)
@@ -421,12 +423,8 @@ ftypes = ";;".join(ftypes)
 class fileSelector(QWidget):
     """Offer a file selection dialog box filtering common image filetypes."""
 
-    def __init__(self, filetypes=ftypes, app=None,
-                 title='Select the images you want to process.'):
-        if app is None:
-            self.app = QApplication.instance()
-        if self.app is None:
-            self.app = QApplication([])
+    def __init__(self, filetypes=ftypes,title='Select the images you want to process.'):
+        self.app = app
         super().__init__()
         self.title = title
         self.left = 10
@@ -456,12 +454,8 @@ class fileSelector(QWidget):
 class folderSelector(QWidget):
     """Offer a directory selection dialog box."""
 
-    def __init__(self, filetypes=ftypes, app=None,
-                 title='Select a folder'):
-        if app is None:
-            self.app = QApplication.instance()
-        if self.app is None:
-            self.app = QApplication([])
+    def __init__(self, filetypes=ftypes, title='Select a folder'):
+        self.app = app
         super().__init__()
         self.title = title
         self.left = 10
@@ -490,14 +484,9 @@ class folderSelector(QWidget):
 class stackFilter():
     """Import image filenames filter images using upper and lower contrast bounds."""
 
-    def __init__(self, fns=os.listdir("./"), app=None):
+    def __init__(self, fns=os.listdir("./")):
         """Import images using fns, a list of filenames."""
-        if app is None:
-            self.app = QApplication.instance()
-        else:
-            self.app = app
-        if self.app is None:
-            self.app = QApplication([])
+        self.app = app
         self.fns = fns
         self.folder = os.path.dirname(self.fns[0])
         print("Loading images:\n")
@@ -524,11 +513,6 @@ class stackFilter():
     def contrast_filter(self):
         """Use pyqtgraph's image UI to select lower an upper bound contrasts."""
         # if there is no defined application instance, make one
-        
-        if self.app is None:
-            self.app = QApplication.instance()
-            if self.app is None:
-                self.app = QApplication([])
         # self.image_view = pg.ImageView()
         # self.image_view.show()
         # self.image_view.setImage(self.imgs)
@@ -573,21 +557,18 @@ class stackFilter():
 
     def pre_filter(self):
         """Use pyqtgraph's image UI to select lower an upper bound contrasts."""
-        # if there is no defined application instance, make one
-        if self.app is None:
-            self.app = QApplication.instance()
-            if self.app is None:
-                self.app = QApplication([])
-
         # self.image_UI = pg.image(self.imgs)  # use the image UI from pyqtgraph
         # create filter window
-        self.window = QtGui.QMainWindow()
-        self.window.resize(800, 800)
-        self.window.setWindowTitle("Filter Image Stack:")
-        self.window.show()
-        self.image_UI = pg.ImageView()
-        self.image_UI.setImage(self.imgs.astype('uint8'))
-        num_frames, width, height = self.imgs.shape
+        # self.window = QtGui.QMainWindow()
+        # self.window.resize(800, 800)
+        # self.window.setWindowTitle("Filter Image Stack:")
+        # self.image_UI = pg.ImageView()
+        # self.window.setCentralWidget(self.image_UI)
+        # self.image_UI.setImage(self.imgs.astype('uint8'))
+        # num_frames, width, height = self.imgs.shape
+        # self.image_UI.setPredefinedGradient('greyclip')
+        # self.window.show()
+        self.image_UI = pg.image(self.imgs)
         self.image_UI.setPredefinedGradient('greyclip')
         self.app.exec_()      # allow the application to run until closed
         # grab low and high bounds from UI
@@ -611,16 +592,13 @@ class stackFilter():
 class ScatterPlot3d():
     """Plot 3d datapoints using pyqtgraph's GLScatterPlotItem."""
 
-    def __init__(self, arr, color=None, size=1, app=None, window=None,
+    def __init__(self, arr, color=None, size=1, window=None,
                  colorvals=None, cmap=plt.cm.viridis):
         self.arr = arr
         self.app = app
-        if self.app is None:
-            self.app = QApplication.instance()
         self.color = color
         self.cmap = cmap
         self.size = size
-        self.app = app
         self.window = window
         self.n, self.dim = self.arr.shape
         assert self.dim == 3, ("Input array should have shape "
@@ -657,8 +635,6 @@ class ScatterPlot3d():
         self.window.addItem(self.scatter_GUI)
 
     def show(self):
-        if self.app is None:
-            self.app = QApplication([])
         self.window.show()
         self.app.exec_()
 
@@ -667,19 +643,14 @@ class ScatterPlot2d():
     """Plot 2d datapoints using pyqtgraph's GLScatterPlotItem."""
 
     # def __init__(self, arr, color=(1, 1, 1, 1), size=[1], app=None, window=None):
-    def __init__(self, arr, color=None, app=None, window=None, size=1,
-                 axis=None, colorvals=None, cmap=plt.cm.viridis, scatter_GUI=None):
-
-        if app is None:
-            self.app = QApplication.instance()
-        if self.app is None:
-            self.app = QApplication([])
+    def __init__(self, arr, color=None, window=None, size=1, axis=None, colorvals=None,
+                 cmap=plt.cm.viridis, scatter_GUI=None):
+        self.app = app
         self.arr = np.array(arr)
         self.color = color
         self.colorvals = colorvals
         self.cmap = cmap
         self.size = size
-        self.app = app
         self.window = window
         self.axis = axis
         self.scatter_GUI = scatter_GUI
@@ -757,10 +728,6 @@ class ScatterPlot2d():
         self.plot()
 
     def plot(self):
-        if self.app is None:
-            self.app = QApplication.instance()
-            if self.app is None:
-                self.app = QApplication([])
         if self.window is None:
             self.window = pg.GraphicsLayoutWidget()
             self.window.setWindowTitle("2D Scatter Plot")
@@ -935,16 +902,10 @@ def main():
     while preview not in ['0', '1']:
         preview = input("Press <1> for yes and <0> for no. ")
     preview = preview == '1'
-    if preview:
-        app = QApplication.instance()
-        if app is None:
-            # if it does not exist then a QApplication is created
-            app = QApplication([])
     input_val = benchmark
     for function in functions:
         input_val = function(input_val, preview,
-                             project_folder=project_folder,
-                             app=app)
+                             project_folder=project_folder)
 
 img_filetypes = ['tiff', 'tff', 'tif', 'jpeg', 'jpg', 'png', 'bmp']
 
@@ -1047,6 +1008,130 @@ def get_cross_section(eye, preview=True, thickness=.3, **kwargs):
     return cross_section
 
 
+def find_pairs(set1, set2, max_iters=3, chunk_size=1000):
+    set1_no_nans = np.any(np.isnan(set1), axis=1) == False
+    set2_no_nans = np.any(np.isnan(set2), axis=1) == False
+    set1 = np.copy(spherical_to_cartesian(set1[set1_no_nans]))
+    set2 = np.copy(spherical_to_cartesian(set2[set2_no_nans]))
+    tree = spatial.KDTree(set1)
+    dists, inds = tree.query(set2)
+    inds = inds.astype(float)
+    vals, counts = np.unique(inds, return_counts=True)
+    duplicates = counts > 1
+    unassigned_set1_inds = np.array(sorted(
+        set(np.arange(set1.shape[0])) - set(inds.astype(int))))
+    iters = 0
+    while np.any(duplicates) and len(unassigned_set1_inds) > 0 and iters < max_iters:
+        nans = np.isnan(inds)
+        # create a smaller tree with just the points in set1 have no pair
+        tree = spatial.KDTree(set1[unassigned_set1_inds])
+        # from that tree, query the points nearest the points in set2
+        # with no pair, indicated by their nan index value
+        sub_dists, sub_inds = tree.query(set2[nans])
+        # replace global index list with new pairs
+        inds[nans] = unassigned_set1_inds[sub_inds]
+        # update distance list
+        dists[nans] = sub_dists
+        # are there duplicates?
+        vals, counts = np.unique(inds, return_counts=True)
+        duplicates = counts > 1
+        # what is left unassigned?
+        unassigned_set1_inds = np.array(
+            sorted(set(np.arange(set1.shape[0])) - set(inds.astype(int))))
+        # replace duplicates that have dist > minimum distance with nan
+        for val in vals[duplicates]:
+            sub_dists = dists[inds == val]
+            sub_inds = np.where(inds == val)[0][np.argsort(sub_dists)[1:]]
+            inds[sub_inds] = np.nan
+        iters += 1
+    no_nans = np.isnan(inds) == False
+    set2 = set2[no_nans]
+    inds = inds[no_nans]
+    dists = dists[no_nans]
+    set1 = set1[inds.astype(int)]
+    return cartesian_to_spherical(set1), cartesian_to_spherical(set2), dists
+
+
+def find_nearest_neighbors(pts, centers, pad=.1):
+    thetas, phis, radii = pts.T
+    centers_thetas, centers_phis, centers_radii = centers.T
+    theta_range, phi_range = thetas.max() - thetas.min(), phis.max() - phis.min()
+    theta_num_segments = int(np.ceil(theta_range/(np.pi / 4)))
+    phi_num_segments = int(np.ceil(phi_range/(np.pi / 4)))
+    theta_boundaries = np.linspace(thetas.min(), thetas.max(), theta_num_segments + 1)
+    phi_boundaries = np.linspace(phis.min(), phis.max(), phi_num_segments + 1)
+    theta_length, phi_length = np.diff(theta_boundaries)[0], np.diff(phi_boundaries)[0]
+    theta_centers = (theta_boundaries + theta_length/2)[:-1]
+    phi_centers = (phi_boundaries + phi_length/2)[:-1]
+    theta_pad, phi_pad = pad * theta_length, pad * phi_length
+    all_inds = np.empty(len(pts), dtype=float)
+    all_inds.fill(np.nan)
+    all_dists = np.copy(all_inds)
+    for theta_ind, (theta_min, theta_center, theta_max) in enumerate(zip(
+            theta_boundaries[:-1], theta_centers, theta_boundaries[1:])):
+        for phi_ind, (phi_min, phi_center, phi_max) in enumerate(zip(
+                phi_boundaries[:-1], phi_centers, phi_boundaries[1:])):
+            # find pts within interval
+            pts_inds = ((thetas >= theta_min) *
+                        (thetas < theta_max) *
+                        (phis >= phi_min) *
+                        (phis < phi_max))
+            pts_near = pts[pts_inds]
+            # find centers within interval
+            centers_inds = ((centers_thetas >= theta_min - theta_pad) *
+                            (centers_thetas < theta_max + theta_pad) *
+                            (centers_phis >= phi_min - phi_pad) *
+                            (centers_phis < phi_max + phi_pad))
+            centers_near = centers[centers_inds]
+            # convert to rectangular coordinates to fix spherical distortion
+            pts_near_rect = spherical_to_cartesian(np.copy(pts_near))
+            centers_near_rect = spherical_to_cartesian(np.copy(centers_near))
+            # make distance tree of centers_near and query nearest pts
+            centers_tree = spatial.KDTree(centers_near_rect)
+            dists_near, inds_near = centers_tree.query(pts_near_rect)
+            all_inds[pts_inds] = np.where(centers_inds)[0][inds_near]
+            all_dists[pts_inds] = dists_near
+            print_progress(theta_ind * phi_num_segments + phi_ind + 1,
+                           theta_num_segments * phi_num_segments)
+    return all_inds, all_dists
+
+# troubleshooting find_pairs
+# set1 = np.random.random((30000, 3))
+# set1 += 1
+# set2 = np.copy(set1)
+# noise = np.random.normal(0, .0001, set2.shape)
+# set2 = set2 + noise
+# set2 = set2[3000:]
+# res1, res2 = find_pairs(set1, set2)
+# ts = np.arange(len(res1))
+# np.random.shuffle(ts)
+# plt.scatter(res1.T[0], res1.T[1], c = ts)
+# plt.scatter(res2.T[0], res2.T[1], c = ts)
+# plt.show()
+# troubleshooting find_nearest_neighbors
+# if 'app' not in locals():
+#     app = QApplication([])
+# set1 = np.random.random((30000, 3))
+# set1 
+# set1 -= .5
+# set1[:, 2] = 1
+# set2_inds = np.random.choice(np.arange(set1.shape[0]), 1000000)
+# set2 = set1[set2_inds]
+# noise = np.random.normal(0, .001, set2.shape)
+# set2 += noise
+# fitted_inds, fitted_dists = find_nearest_neighbors(set2, set1, .1)
+# no_nans = np.isnan(fitted_inds) == False
+# scatter = ScatterPlot3d(set2[no_nans], size=1, colorvals=fitted_inds[no_nans], app=app)
+# scatter2 = ScatterPlot3d(set1, size=3, colorvals=np.arange(len(set1)), window=scatter.window, app=app)
+# scatter2.show()
+# plt.scatter(set2[:, 0], set2[:, 1], c=fitted_inds, marker='.')
+# plt.scatter(set1[:, 0], set1[:, 1], marker='o', color='k')
+# plt.show() 
+
+
+
+
+
 def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     save = False
     # pixel_length = .001
@@ -1080,7 +1165,7 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     labels = []
     dist_trees = []
     minimum_facets = 500
-    maximum_facets = 20000
+    maximum_facets = 50000
     for cross_section in [eye[inner_shell], eye[outer_shell]]:
         save = False
         while not save:
@@ -1176,6 +1261,8 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
             print("\n")
             thetas = np.concatenate(thetas)
             phis = np.concatenate(phis)
+            cross_section.fit_surface()
+            radii = cross_section.interp_func(thetas, phis)
             img, (theta_vals, phi_vals) = cross_section.rasterize(image_size=image_size)
             if preview:
                 plt.pcolormesh(theta_vals, phi_vals, img.T)
@@ -1185,34 +1272,33 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
                 plt.xlabel("polar angle (theta)")
                 plt.ylabel("azimuthal angle (phi)")
                 plt.show()
-            print("Finding clusters of points near ommatidia centers: ")
-            centers = np.array([thetas, phis]).T
+            centers = np.array([thetas, phis, radii]).T
+            # tree = spatial.KDTree(centers)
             # find clusters here and now! by finding point nearest each center
-            tree = spatial.KDTree(centers)
-            dists, inds = [], []
-            # this takes a lot of time and RAM so break it into chunks
-            chunks = int(np.round(cross_section.polar.shape[0] / 10**4))
-            chunks = np.array_split(cross_section.polar[:, :2], chunks, axis=0)
-            old_prop = 0
-            for num, coords in enumerate(chunks):
-                d, i = tree.query(coords, k=1)
-                dists += [d]
-                inds += [i]
-                prop = int(100 * ((num + 1) / len(chunks)))
-                print_progress(num + 1, len(chunks))
-            print(".\n")
-            inds = np.concatenate(inds)
-            if preview:
-                # get random colorvals for scatterplot
-                cvals = {}
-                rand_vals = np.random.choice(list(set(inds)), len(set(inds)), replace=False)
-                for val, rand_val in zip(set(inds), rand_vals):
-                    cvals[val] = rand_val
-                color_vals = np.array([cvals[ind] for ind in  inds])
-                polar_scatter = ScatterPlot3d(cross_section.pts, app=app,
-                                              colorvals=color_vals, cmap=plt.cm.tab20)
-                polar_scatter.show()
-            segment_labels = inds
+            # dists, inds = [], []
+            # # this takes a lot of time and RAM so break it into chunks
+            # chunks = int(np.round(cross_section.polar.shape[0] / 10**4))
+            # chunks = np.array_split(cross_section.polar[:, :2], chunks, axis=0)
+            # old_prop = 0
+            # for num, coords in enumerate(chunks):
+            #     d, i = tree.query(coords, k=1)
+            #     dists += [d]
+            #     inds += [i]
+            #     prop = int(100 * ((num + 1) / len(chunks)))
+            #     print_progress(num + 1, len(chunks))
+            # print(".\n")
+            # inds = np.concatenate(inds)
+            # if preview:
+            #     # get random colorvals for scatterplot
+            #     cvals = {}
+            #     rand_vals = np.random.choice(list(set(inds)), len(set(inds)), replace=False)
+            #     for val, rand_val in zip(set(inds), rand_vals):
+            #         cvals[val] = rand_val
+            #     color_vals = np.array([cvals[ind] for ind in  inds])
+            #     polar_scatter = ScatterPlot3d(cross_section.pts, app=app,
+            #                                   colorvals=color_vals, cmap=plt.cm.tab20)
+            #     polar_scatter.show()
+            # segment_labels = inds
             print("Continue with this image size? ")
             response = None
             while response not in ['0', '1']:
@@ -1229,58 +1315,44 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
                     except:
                         image_size = input("The response must be a whole number: ")
             else:
-                dist_trees += [tree]
-                labels += [segment_labels]
-    inner_tree, outer_tree = dist_trees
-    inner_pts, outer_pts = inner_tree.data, outer_tree.data
-    # smaller_tree = np.argmin([tree0_pts.shape[0], tree1_pts.shape[0]])
-    # other_tree = np.argmax([tree0_pts.shape[0], tree1_pts.shape[0]])
-    dists, inds = outer_tree.query(inner_pts)
-    inds = inds.astype(float)
-    vals, counts = np.unique(inds, return_counts=True)
-    duplicates = counts > 1
-    unassigned_outer_pts = np.array(
-        sorted(set(np.arange(outer_pts.shape[0])) - set(inds.astype(int))))
-    while np.any(duplicates) and len(unassigned_outer_pts) > 0:
-        for val in vals[duplicates]:
-            sub_dists = dists[inds == val]
-            sub_inds = np.where(inds == val)[0][sub_dists != min(sub_dists)]
-            inds[sub_inds] = np.nan
-        nans = np.isnan(inds)
-        tree = spatial.KDTree(outer_pts[unassigned_outer_pts])
-        sub_dists, sub_inds = tree.query(inner_pts[nans])
-        inds[nans] = unassigned_outer_pts[sub_inds]
-        dists[nans] = sub_dists
-        vals, counts = np.unique(inds, return_counts=True)
-        duplicates = counts > 1
-        unassigned_outer_pts = np.array(
-            sorted(set(np.arange(outer_pts.shape[0])) - set(inds.astype(int))))
-    pairs = np.array([np.arange(len(inds)), inds]).T.astype(int)
+                dist_trees += [centers]
+                # dist_trees += [tree]
+                # labels += [segment_labels]
+    # inner_tree, outer_tree = dist_trees
+    # inner_pts, outer_pts = inner_tree.data, outer_tree.data
+    inner_pts, outer_pts = dist_trees
+    inner_pts, outer_pts, dists = find_pairs(inner_pts, outer_pts)
+    pairs = np.array([np.arange(len(inner_pts)), np.arange(len(inner_pts))]).T.astype(int)
+    max_dist = np.percentile(dists, 99.9)
     if preview:
         for (t0_ind, t1_ind), dist in zip(pairs, dists):
-            if dist < .02:
-                xs, ys = np.array([inner_pts[t0_ind], outer_pts[t1_ind]]).T
-                plt.plot(xs, ys, 'k-.')
+            if dist < max_dist:
+                xs, ys = np.array([inner_pts[t0_ind, :2], outer_pts[t1_ind, :2]]).T
+                plt.plot(xs, ys, 'k-')
                 # plt.scatter(xs, ys, c=[0, 1], marker='.', cmap='viridis')
         plt.gca().set_aspect('equal')
         plt.show()
     # pairs will allow us to convert from inner cluster labels to outer cluster labels
-    inner_lbls, outer_lbls = labels
-    new_inner_lbls = inds[inner_lbls]
+    # now the inside and outside labels are the same
+    print("Finding clusters of points near ommatidia centers of inside shell: ")
+    thickness = np.diff(np.percentile(eye.residuals, [.5, 99.5]))[0]
+    # why is this not working at all? troubleshoot find_nearest_neighbors
+    inner_lbls, inner_dists = find_nearest_neighbors(eye[inner_shell].polar, inner_pts, .1)
+    print("\n")
+    print("Finding clusters of points near ommatidia centers of outside shell: ")
+    outer_lbls, outer_dists = find_nearest_neighbors(eye[outer_shell].polar, outer_pts, .1)
+    print("\n")
+    # inner_lbls, outer_lbls = labels
+    # new_inner_lbls = inds[inner_lbls]
     all_inds = np.zeros(outer_shell.shape[0])
-    all_inds[inner_shell] = new_inner_lbls
+    all_inds[inner_shell] = inner_lbls
     all_inds[outer_shell] = outer_lbls
     if preview:
         # get random colorvals for scatterplot
-        cvals = {}
-        rand_vals = np.random.choice(list(set(all_inds)), len(set(all_inds)), replace=False)
-        for val, rand_val in zip(set(all_inds), rand_vals):
-            cvals[val] = rand_val
-        colorvals = []
-        for ind in all_inds:
-            colorvals += [int(cvals[ind])]
-        colorvals = np.array(colorvals)
-        polar_scatter = ScatterPlot3d(eye.pts, app=app,
+        no_nans = np.isnan(all_inds) == False
+        rand_vals = np.random.permutation(np.arange(0, all_inds[no_nans].max() + 1)).astype(int)
+        colorvals = rand_vals[all_inds[no_nans].astype(int)]
+        polar_scatter = ScatterPlot3d(eye.pts[no_nans], app=app,
                                       colorvals=colorvals, cmap=plt.cm.tab20)
         polar_scatter.show()
     np.save(os.path.join(project_folder, "ommatidia_labels.npy"), all_inds)
@@ -1297,13 +1369,15 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
     cluster_labels = np.array(cluster_labels, dtype=np.uint32)
     eye = load_Points(os.path.join(project_folder, "coordinates.points"))
     data_to_save = dict()
-    cols = ['x_center', 'y_center', 'z_center', 'theta_center',
-            'phi_center', 'r_center', 'children_rectangular', 'children_polar', 'n']
+    # cols = ['x_center', 'y_center', 'z_center', 'theta_center',
+    #         'phi_center', 'r_center', 'children_rectangular', 'children_polar', 'n']
+    cols = ['x_center', 'y_center', 'z_center',
+            'theta_center', 'phi_center', 'r_center', 'n']
     for col in cols:
         data_to_save[col] = []
     # for num, cone in enumerate(clusters):
     cone_centers = []
-    labels = np.unique(cluster_labels)
+    labels, counts = np.unique(cluster_labels, return_counts=True)
     print("Taking preliminary measurements per ommatidial cluster: ")
     for num, lbl in enumerate(labels):
         inds = cluster_labels == lbl
@@ -1317,8 +1391,9 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
         n = len(children_pts)
         for lbl, vals in zip(
                 cols,
-                [x_center, y_center, z_center, theta_center, phi_center, r_center,
-                 children_pts.tolist(), children_polar.tolist(), n]):
+                # [x_center, y_center, z_center, theta_center, phi_center, r_center,
+                #  children_pts.tolist(), children_polar.tolist(), n]):
+                [x_center, y_center, z_center, theta_center, phi_center, r_center, n]):
             data_to_save[lbl] += [vals]
         print_progress(num, len(labels))
     print("\n")
@@ -1376,10 +1451,35 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
             pts.spherical()
             d_vector = pts.center - center
             d_vector /= LA.norm(d_vector)
-            # cone.approx_vector = d_vector
+            # instead of sphere fitting, use average normal vector of plane created by each pair of neighboring ommatidia_centers
+            pts = cone_centers[neighbor_group]
+            # center about the main ommatidium
+            pts_centered = big_neighborhood - center
+            pts_centered = pts_centered[1:]
+            # find cross product of each pair of neighboring ommatidia
+            cross = np.cross(pts_centered[np.newaxis], pts_centered[:, np.newaxis])
+            # half of these will be left handed while the other half are right handed
+            # because the matrix is negative symmetrical
+            # find those that minimize the angle between itself and the vector to the
+            # center of the fitted sphere
+            magn = np.linalg.norm(cross, axis=-1)
+            # normalize the direction vectors into unit vectors
+            cross /= magn[:, :, np.newaxis]
+            # find angle between cross product unit vectors and sphere center unit vector 
+            sphere_vector = -center
+            sphere_vector /= np.linalg.norm(sphere_vector)
+            angles_between = np.arccos(np.dot(cross, sphere_vector))
+            avg_vector = cross[angles_between < np.pi/2]
+            d_vector = avg_vector.mean(0)
+            # center
             approx_vectors += [d_vector]
+            # cone.approx_vector = d_vector
             # approximate ommatidial axis vector by regressing cone data
             d_vector2 = cone.get_line()
+            d_vector2 = np.array([d_vector2, -d_vector2])
+            angs = np.arccos(np.dot(d_vector2, sphere_vector))
+            ind = angs == angs.min()
+            d_vector2 = d_vector2[ind].min(0)
             anatomical_vectors += [d_vector2]
             # cone.anatomical_vector = d_vector2
             # plot sample cone with through lines (check)
@@ -1394,9 +1494,10 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
             # scatter.window.addItem(plt2)
             # scatter.show()
             # calculate the anatomical skewness (angle between the two vectors)
-            inside_ang = min(
-                angle_between(d_vector, d_vector2),
-                angle_between(d_vector, -d_vector2))
+            # inside_ang = min(
+            #     angle_between(d_vector, d_vector2),
+            #     angle_between(d_vector, -d_vector2))
+            inside_ang = angle_between(d_vector, d_vector2)
             skewness += [inside_ang]
             # cone.skewness = inside_ang
             # cones += [cone]
@@ -1414,14 +1515,12 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
         scatter_lens_area = ScatterPlot3d(
             cone_centers[no_nans],
             size=10,
-            colorvals=lens_area[no_nans],
-            app=app)
+            colorvals=lens_area[no_nans])
         scatter_lens_area.show()
         scatter_skewness = ScatterPlot3d(
             cone_centers,
             size=10,
-            colorvals=skewness,
-            app=app)
+            colorvals=skewness)
         scatter_skewness.show()
         response = input(
             "Save and continue? Press <1> for yes, <0> to reprocess, or <q> to quit.")
@@ -1448,8 +1547,6 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
         project_folder = kwargs['project_folder']
     else:
         project_folder = os.getcwd()
-    if 'app' in kwargs.keys():
-        app = kwargs['app']
     labels = cone_cluster_data.neighbor_labels.values
     pairs_tested = set()
     interommatidial_angle_approx = dict()
