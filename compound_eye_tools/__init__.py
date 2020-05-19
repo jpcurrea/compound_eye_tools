@@ -762,9 +762,9 @@ class ScatterPlot2d():
         self.app.exec_()
 
 
-def filter_and_preview_images(fns, app):
+def filter_and_preview_images(fns):
     # use stackFilter GUI to filter the stack of images based on contrast values
-    SF = stackFilter(fns, app=app)
+    SF = stackFilter(fns)
     SF.contrast_filter()
     eye = SF.arr
     # 1. convert to spherical coordinates by fitting a sphere with OLS
@@ -924,8 +924,6 @@ def import_stack(folder, preview=True, **kwargs):
     # return coordinates as a Points object
     if 'project_folder' in kwargs.keys():
         project_folder = kwargs['project_folder']
-    if 'app' in kwargs.keys():
-        app = kwargs['app']
     basename = os.path.basename(folder)
     if basename == 'prefiltered_stack':
         prefilter_folder = folder
@@ -951,10 +949,10 @@ def import_stack(folder, preview=True, **kwargs):
     while save is False:
         eye = None
         if eye is None:
-            eye = filter_and_preview_images(filenames, app=app)
+            eye = filter_and_preview_images(filenames)
         # 3d scatter plot of the included coordinates
         if preview:
-            scatter = ScatterPlot3d(eye.pts, app=app)
+            scatter = ScatterPlot3d(eye.pts)
             scatter.show()
         print("Save and continue? ")
         response = None
@@ -970,8 +968,6 @@ def get_cross_section(eye, preview=True, thickness=.3, **kwargs):
         project_folder = kwargs['project_folder']
     else:
         project_folder = os.path.dirname(eye.latest_fn)
-    if 'app' in kwargs.keys():
-        app = kwargs['app']
     save = False
     while save is False:
         eye.get_polar_cross_section(thickness=thickness)
@@ -983,7 +979,7 @@ def get_cross_section(eye, preview=True, thickness=.3, **kwargs):
             # pg.image(img)
             # plt.imshow(img)
             # plt.show()
-            scatter = ScatterPlot3d(cross_section.pts, app=app)
+            scatter = ScatterPlot3d(cross_section.pts)
             scatter.show()
         response = None
         print("Save and continue? ")
