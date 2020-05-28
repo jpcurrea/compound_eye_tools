@@ -1718,19 +1718,18 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
     orientations_dict = dict()
     eye = load_Points(os.path.join(project_folder, "coordinates.points"))
     cluster_lbls = np.load(os.path.join(project_folder, "ommatidia_labels.npy"))
+    approx_IOAs = []
+    anatomical_IOAs = []
+    pairs = []
+    orientations = []
+    # for neighbor in cone.neighbor_lbls:
     for num, cone in cone_cluster_data.iterrows():
-        approx_IOAs = []
-        anatomical_IOAs = []
-        pairs = []
-        orientations = []
-        # for neighbor in cone.neighbor_lbls:
         if isinstance(cone.neighbor_inds, str):
             neighbor_inds = cone.neighbor_inds[1:-1].split(",")
             neighbor_inds = [int(val) for val in neighbor_inds]
         else:
             neighbor_inds = cone.neighbor_inds
         # store the centerpoint between each cone
-        centers = []
         if isinstance(cone.approx_axis, str):
             approx_direction = np.array(cone.approx_axis[1:-1].split(",")).astype(float)
         else:
