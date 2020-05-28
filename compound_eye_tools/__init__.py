@@ -11,6 +11,8 @@ import sys
 
 # graphic libraries
 from matplotlib import pyplot as plt
+from matplotlib.widgets import Slider, Button, RadioButtons, TextBox
+from matplotlib.backend_bases import NavigationToolbar2
 from PyQt5.QtWidgets import QWidget, QFileDialog, QApplication
 from pyqtgraph.Qt import QtCore, QtGui
 from PyQt5.QtWidgets import QFileDialog
@@ -23,7 +25,8 @@ import fly_eye as fe
 blue, green, yellow, orange, red, purple = [(0.30, 0.45, 0.69), (0.33, 0.66, 0.41), (
     0.83, 0.74, 0.37), (0.78, 0.50, 0.16), (0.77, 0.31, 0.32), (0.44, 0.22, 0.78)]
 
-app = QApplication([])
+if 'app' not in globals():
+    app = QApplication([])
 
 def load_image(fn):
     """Import an image as a numpy array using the PIL."""
@@ -224,7 +227,7 @@ class Points():
 
     def __init__(self, arr, center_points=True,
                  polar=None, spherical_conversion=True,
-                 rotate_com=True):
+                 rotate_com=True, vals=None):
         self.pts = np.array(arr)
         if arr.ndim > 1:
             assert self.pts.shape[1] == 3, ("Input array should have shape "
@@ -239,6 +242,7 @@ class Points():
                                                 self.pts.shape))
             self.pts = self.pts.reshape((1, -1))
         self.original_pts = self.pts
+        self.vals = vals
         self.shape = self.pts.shape
         self.center = np.array([0, 0, 0])
         self.polar = None
@@ -276,8 +280,13 @@ class Points():
         return len(self.x)
 
     def __getitem__(self, key):
-        out = Points(self.pts[key], polar=self.polar[key],
-                     rotate_com=False, spherical_conversion=False)
+        if self.vals is None:
+            out = Points(self.pts[key], polar=self.polar[key],
+                         rotate_com=False, spherical_conversion=False)
+        else:
+            out = Points(self.pts[key], polar=self.polar[key],
+                         rotate_com=False, spherical_conversion=False,
+                         vals=self.vals[key])
         return out
 
     def spherical(self, center=None):
@@ -299,7 +308,7 @@ class Points():
         if mode == 'polar':
             arr = self.polar
         x, y, z = arr.T
-
+        vals = self.vals
         x_range = x.max() - x.min()
         y_range = y.max() - y.min()
         # figure out side lengths needed for input image size
@@ -323,7 +332,10 @@ class Points():
         # print("\n")
         # avg = np.array(avg)
         # avg = avg.reshape((len(xs) - 1, len(ys) - 1))
-        avg = np.histogram2d(x, y, bins=(xs, ys))
+        if vals is None:
+            avg = np.histogram2d(x, y, bins=(xs, ys))
+        else:
+            avg = np.histogram2d(x, y, bins=(xs, ys), weights = vals)
         avg = avg[0]
         self.raster = avg
         xs = xs[:-1] + (self.raster_pixel_length / 2.)
@@ -381,6 +393,7 @@ class Points():
         no_nans = np.isnan(z_new) == False
         self.pts = self.pts[no_nans]
         self.polar = self.polar[no_nans]
+        self.vals = self.vals[no_nans]
         self.x, self.y, self.z = self.pts.T
         self.theta, self.phi, self.radii = self.polar.T
         self.surface = z_new[no_nans]
@@ -480,15 +493,189 @@ class folderSelector(QWidget):
             "",
             options=options)
 
+class tracker_window():
+
+    def __init__(self, dirname="./"):
+        # m.pyplot.ion()
+        self.dirname = dirname
+        self.load_filenames()
+        self.num_frames = len(self.filenames)
+        self.range_frames = np.array(range(self.num_frames))
+        self.curr_frame_index = 0
+        self.data_changed = False
+        # the figure
+        self.load_image()
+        # figsize = self.image.shape[1]/90, self.image.shape[0]/90
+        h, w = self.image.shape[:2]
+        if w > h:
+            fig_width = 8
+            fig_height = h/w * fig_width
+        else:
+            fig_height = 8
+            fig_width = w/h * fig_height
+        # start with vmin and vmax at extremes
+        self.vmin = 0
+        self.vmax = np.iinfo(self.image.dtype).max
+        self.vmax_possible = self.vmax
+        # self.figure = plt.figure(1, figsize=(
+        #     figsize[0]+1, figsize[1]+2), dpi=90)
+        self.figure = plt.figure(1, figsize=(fig_width, fig_height), dpi=90)
+        # xmarg, ymarg = .2, .1
+        # fig_left, fig_bottom, fig_width, fig_height = .15, .1, .75, .85
+        fig_left, fig_bottom, fig_width, fig_height = .1, .1, .75, .8
+        axim = plt.axes([fig_left, fig_bottom, fig_width, fig_height])
+        self.implot = plt.imshow(self.image, cmap='viridis', vmin=self.vmin, vmax=self.vmax)
+        self.xlim = self.figure.axes[0].get_xlim()
+        self.ylim = self.figure.axes[0].get_ylim()
+        self.axis = self.figure.get_axes()[0]
+        self.figure.axes[0].set_xlim(*self.xlim)
+        self.figure.axes[0].set_ylim(*self.ylim)
+        self.image_data = self.axis.images[0]
+        # title
+        self.title = self.figure.suptitle(
+            '%d - %s' % (self.curr_frame_index + 1, self.filenames[self.curr_frame_index].rsplit('/')[-1]))
+
+        # the slider controlling frames
+        axframe = plt.axes([fig_left, 0.04, fig_width, 0.02])
+        self.curr_frame = Slider(
+            axframe, 'frame', 1, self.num_frames, valinit=1, valfmt='%d', color='k')
+        self.curr_frame.on_changed(self.change_frame)
+        # the vmin slider
+        vminframe = plt.axes([fig_left + fig_width + .02, 0.1, .02, .05 + .7])
+        self.vmin = Slider(
+            vminframe, 'min', 0, self.vmax_possible,
+            valinit=0, valfmt='%d', color='k', orientation='vertical')
+        self.vmin.on_changed(self.show_image)
+        # the vmax slider
+        vmaxframe = plt.axes([fig_left + fig_width + .1, 0.1, .02, .05 + .7])
+        self.vmax = Slider(
+            vmaxframe, 'max', 0, self.vmax_possible, valinit=self.vmax_possible,
+            valfmt='%d', color='k', orientation='vertical')
+        self.vmax.on_changed(self.show_image)
+        # limit both sliders
+        self.vmin.slidermax = self.vmax
+        self.vmax.slidermin = self.vmin
+        # the colorbar in between
+        self.cbar_ax = plt.axes([fig_left + fig_width + .06, 0.1, .02, .05 + .7])
+        self.colorvals = np.arange(self.vmax_possible)
+        self.cbar = self.cbar_ax.pcolormesh([0, 10],
+                                            self.colorvals,
+                                            self.colorvals[:, np.newaxis],
+                                            cmap='viridis', vmin=0, vmax=self.vmax_possible)
+        self.cbar_ax.set_xticks([])
+        self.cbar_ax.set_yticks([])
+        # connect some keys
+        # self.cidk = self.figure.canvas.mpl_connect(
+        #     'key_release_event', self.on_key_release)
+        # self.cidm = self.figure.canvas.mpl_connect('button_release_event', self.on_mouse_release)
+        # self.cidm = self.figure.canvas.mpl_connect('', self.on_mouse_release)
+        # self.figure.canvas.toolbar.home = self.show_image
+
+        # change the toolbar functions
+        NavigationToolbar2.home = self.show_image
+        NavigationToolbar2.save = self.save_data
+
+    def load_filenames(self):
+        ls = os.listdir(self.dirname)
+        self.filenames = [os.path.join(self.dirname, f) for f in ls if f.lower().endswith(
+            ('.png', '.jpg', '.bmp', '.jpg', '.jpeg', '.tif', '.tiff'))]
+        self.filenames.sort()
+
+    def load_image(self):
+        print(self.curr_frame_index)
+        self.image = PIL.Image.open(self.filenames[self.curr_frame_index])
+        self.image = np.asarray(self.image)
+
+    def show_image(self, *args):
+        print('show_image')
+        # first plotthe image
+        self.im = np.copy(self.image)
+        colorvals = np.copy(self.colorvals)
+        # remove values > vmax
+        self.im[self.im > self.vmax.val] = 0
+        self.figure.axes[0].get_images()[0].set_clim([self.vmin.val, self.vmax.val])
+        self.figure.axes[0].get_images()[0].set_data(self.im)
+        colorvals[colorvals > self.vmax.val] = 0
+        self.cbar.set_array(colorvals)
+        self.cbar.set_clim([self.vmin.val, self.vmax.val])
+        # and the title
+        self.title.set_text('%d - %s' % (self.curr_frame_index + 1,
+                                         self.filenames[self.curr_frame_index].rsplit('/')[-1]))
+        plt.draw()
+
+    def change_frame(self, new_frame):
+        print('change_frame {} {}'.format(new_frame, int(new_frame)))
+        self.curr_frame_index = int(new_frame)-1
+        self.load_image()
+        self.show_image()
+        if self.data_changed:
+            self.save_data()
+            self.data_changed = False
+
+    def nudge(self, direction):
+        self.show_image()
+        # self.change_frame(mod(self.curr_frame, self.num_frames))
+        self.data_changed = True
+
+    def on_key_release(self, event):
+        # frame change
+        if event.key in ("pageup", "alt+v", "alt+tab"):
+            self.curr_frame.set_val(
+                np.mod(self.curr_frame_index, self.num_frames))
+        elif event.key in ("pagedown", "alt+c", "tab"):
+            self.curr_frame.set_val(
+                np.mod(self.curr_frame_index + 2, self.num_frames))
+            print(self.curr_frame_index)
+        elif event.key == "alt+pageup":
+            self.curr_frame.set_val(
+                np.mod(self.curr_frame_index - 9, self.num_frames))
+        elif event.key == "alt+pagedown":
+            self.curr_frame.set_val(
+                np.mod(self.curr_frame_index + 11, self.num_frames))
+        elif event.key == "home":
+            self.curr_frame.set_val(1)
+        elif event.key == "end":
+            self.curr_frame.set_val(self.num_frames)
+        # marker move
+        elif event.key == "left":
+            self.nudge(-1)
+        elif event.key == "right":
+            self.nudge(1)
+        elif event.key == "up":
+            self.nudge(-1j)
+        elif event.key == "down":
+            self.nudge(1j)
+        elif event.key == "alt+left":
+            self.nudge(-10)
+        elif event.key == "alt+right":
+            self.nudge(10)
+        elif event.key == "alt+up":
+            self.nudge(-10j)
+        elif event.key == "alt+down":
+            self.nudge(10j)
+
+    def update_sliders(self, val):
+        self.show_image()
+
+    def on_mouse_release(self, event):
+        self.change_frame(0)
+
+    def save_data(self):
+        print('save')
+        for fn, val in zip(self.objects_to_save.keys(), self.objects_to_save.values()):
+            np.save(fn, val)
 
 class stackFilter():
     """Import image filenames filter images using upper and lower contrast bounds."""
 
     def __init__(self, fns=os.listdir("./")):
         """Import images using fns, a list of filenames."""
-        self.app = app
         self.fns = fns
         self.folder = os.path.dirname(self.fns[0])
+        self.vals = None
+        self.imgs = None
+
+    def load_images(self):
         print("Loading images:\n")
         first_img = None
         for fn in self.fns:
@@ -499,45 +686,30 @@ class stackFilter():
                 pass
         width, height = first_img.shape
         imgs = []
-        for num, fn in enumerate(fns):
+        for num, fn in enumerate(self.fns):
             try:
                 imgs += [load_image(fn)]
             except:
                 print(f"{fn} failed to load.")
                 imgs += [np.zeros((width, height))]
-            print_progress(num, len(fns))
-        print("\n")
-        assert len(imgs) > 0, "All images failed to load."
-        self.imgs = np.array(imgs, dtype=np.uint16)
+            print_progress(num, len(self.fns))
+        self.imgs = np.array(imgs, dtype=first_img.dtype)
 
     def contrast_filter(self):
-        """Use pyqtgraph's image UI to select lower an upper bound contrasts."""
-        # if there is no defined application instance, make one
-        # self.image_view = pg.ImageView()
-        # self.image_view.show()
-        # self.image_view.setImage(self.imgs)
-        # self.window = pg.GraphicsLayoutWidget()
-        # self.image_UI = self.window.addPlot()
-        self.imgs = self.imgs.astype('uint8')
-        self.image_UI = pg.image(self.imgs)
-        # self.image_UI = pg.ImageView()
-        # self.image_UI.setImage(self.imgs)
-        # self.image_UI.setPredefinedGradient('greyclip')
-        # self.image_UI.show()
-        # use the image UI from pyqtgraph
-        self.app.exec_()      # allow the application to run until closed
+        self.contrast_filter_UI = tracker_window(dirname=self.folder)
+        plt.show()
         # grab low and high bounds from UI
-        self.low, self.high = self.image_UI.getLevels()
-        # xs = np.array([], dtype='uint16')
-        # ys = np.array([], dtype='uint16')
-        # zs = np.array([], dtype='uint16')
-
+        self.low = int(np.round(self.contrast_filter_UI.vmin.val))
+        self.high = int(np.round(self.contrast_filter_UI.vmax.val))
+        self.load_images()
         print("Extracting coordinate data: ")
-        np.logical_and(self.imgs <= self.high, self.imgs > self.low,
-                       out=self.imgs)
-        self.imgs = self.imgs.astype(bool, copy=False)
+        inds_to_remove = np.logical_or(self.imgs <= self.low, self.imgs > self.high)
+        self.imgs[inds_to_remove] = 0
+        # np.logical_and(self.imgs <= self.high, self.imgs > self.low, out=self.imgs)
+        # self.imgs = self.imgs.astype(bool, copy=False)
         try:
-            ys, xs, zs = np.where(self.imgs)
+            ys, xs, zs = np.where(self.imgs > 0)
+            vals = self.imgs[ys, xs, zs]
         except:
             print(
                 "coordinate data is too large. Using a hard drive memory map instead of RAM.")
@@ -546,41 +718,32 @@ class stackFilter():
             self.imgs_memmap[:] = self.imgs[:]
             del self.imgs
             self.imgs = None
+            xs, ys, zs, vals = [], [], [], []
             for depth, img in enumerate(self.imgs_memmap):
-                y, x = np.where(img)
+                y, x = np.where(img > 0)
                 z = np.repeat(depth, len(x))
+                vals += [img[y, x]]
                 xs = np.append(xs, x)
                 ys = np.append(ys, y)
                 zs = np.append(zs, z)
                 print_progress(depth + 1, len(self.imgs))
         self.arr = np.array([xs, ys, zs], dtype=np.uint16).T
+        self.vals = np.array(vals)
 
     def pre_filter(self):
-        """Use pyqtgraph's image UI to select lower an upper bound contrasts."""
-        # self.image_UI = pg.image(self.imgs)  # use the image UI from pyqtgraph
-        # create filter window
-        # self.window = QtGui.QMainWindow()
-        # self.window.resize(800, 800)
-        # self.window.setWindowTitle("Filter Image Stack:")
-        # self.image_UI = pg.ImageView()
-        # self.window.setCentralWidget(self.image_UI)
-        # self.image_UI.setImage(self.imgs.astype('uint8'))
-        # num_frames, width, height = self.imgs.shape
-        # self.image_UI.setPredefinedGradient('greyclip')
-        # self.window.show()
-        self.image_UI = pg.image(self.imgs)
-        self.image_UI.setPredefinedGradient('greyclip')
-        self.app.exec_()      # allow the application to run until closed
+        self.contrast_filter_UI = tracker_window(dirname=self.folder)
+        plt.show()
         # grab low and high bounds from UI
-        self.low, self.high = self.image_UI.getLevels()
-        dirname = os.path.dirname(self.fns[0])
-        folder = os.path.join(dirname, 'prefiltered_stack')
+        self.low = self.contrast_filter_UI.vmin.val
+        self.high = self.contrast_filter_UI.vmax.val
+        folder = os.path.join(self.folder, 'prefiltered_stack')
         if not os.path.isdir(folder):
             os.mkdir(folder)
-        np.logical_and(self.imgs > self.low, self.imgs <
-                       self.high, out=self.imgs)
-        self.imgs = self.imgs.astype('uint8', copy=False)
-        np.multiply(self.imgs, 255, out=self.imgs)
+        self.load_images()
+        inds_to_remove = np.logical_or(self.imgs <= self.low, self.imgs > self.high)
+        self.imgs[inds_to_remove] = 0
+        # self.imgs = self.imgs.astype('uint8', copy=False)
+        # np.multiply(self.imgs, 255, out=self.imgs)
         print("Saving filtered images:\n")
         for num, (fn, img) in enumerate(zip(self.fns, self.imgs)):
             base = os.path.basename(fn)
@@ -772,7 +935,7 @@ def filter_and_preview_images(fns):
     eye = eye - eye.mean(0)
     # eye = np.round(eye)
     # use Points class to fit a sphere and convert to spherical coordinates, and
-    eye = Points(eye, center_points=True, rotate_com=True)
+    eye = Points(eye, center_points=True, rotate_com=True, vals=SF.vals)
     return eye
 
 
@@ -952,7 +1115,10 @@ def import_stack(folder, preview=True, **kwargs):
             eye = filter_and_preview_images(filenames)
         # 3d scatter plot of the included coordinates
         if preview:
-            scatter = ScatterPlot3d(eye.pts)
+            if eye.vals is None:
+                scatter = ScatterPlot3d(eye.pts)
+            else:
+                scatter = ScatterPlot3d(eye.pts, colorvals=eye.vals)
             scatter.show()
         print("Save and continue? ")
         response = None
@@ -979,7 +1145,10 @@ def get_cross_section(eye, preview=True, thickness=.3, **kwargs):
             # pg.image(img)
             # plt.imshow(img)
             # plt.show()
-            scatter = ScatterPlot3d(cross_section.pts)
+            if cross_section.vals is None:
+                scatter = ScatterPlot3d(cross_section.pts)
+            else:
+                scatter = ScatterPlot3d(cross_section.pts, colorvals=cross_section.vals)
             scatter.show()
         response = None
         print("Save and continue? ")
@@ -1186,7 +1355,8 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
                         rot = rotate(rot, theta_displacement, axis=1).T
                         polar1 = cartesian_to_spherical(rot)
                         segment = Points(rot, rotate_com=False, polar=polar1,
-                                         spherical_conversion=False)
+                                         spherical_conversion=False,
+                                         vals=cross_section.vals[inds])
                         # 3. use low pass filter method from Eye object in fly_eye to find
                         # centers of cone clusters/ommatidia.
                         # a. rasterize the image so that we can use our image processing
@@ -1319,7 +1489,7 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     inner_pts, outer_pts = dist_trees
     inner_pts, outer_pts, dists = find_pairs(inner_pts, outer_pts)
     pairs = np.array([np.arange(len(inner_pts)), np.arange(len(inner_pts))]).T.astype(int)
-    max_dist = np.percentile(dists, 99.9)
+    max_dist = 1.5 * np.median(dists)
     if preview:
         for (t0_ind, t1_ind), dist in zip(pairs, dists):
             if dist < max_dist:
@@ -1328,6 +1498,7 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
                 # plt.scatter(xs, ys, c=[0, 1], marker='.', cmap='viridis')
         plt.gca().set_aspect('equal')
         plt.show()
+    pairs = pairs[dists <= max_dist]
     # pairs will allow us to convert from inner cluster labels to outer cluster labels
     # now the inside and outside labels are the same
     print("Finding clusters of points near ommatidia centers of inside shell: ")
@@ -1348,8 +1519,7 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
         no_nans = np.isnan(all_inds) == False
         rand_vals = np.random.permutation(np.arange(0, all_inds[no_nans].max() + 1)).astype(int)
         colorvals = rand_vals[all_inds[no_nans].astype(int)]
-        polar_scatter = ScatterPlot3d(eye.pts[no_nans], app=app,
-                                      colorvals=colorvals, cmap=plt.cm.tab20)
+        polar_scatter = ScatterPlot3d(eye.pts[no_nans], colorvals=colorvals, cmap=plt.cm.tab20)
         polar_scatter.show()
     np.save(os.path.join(project_folder, "ommatidia_labels.npy"), all_inds)
     return all_inds
@@ -1360,8 +1530,6 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
         project_folder = kwargs['project_folder']
     else:
         project_folder = os.getcwd()
-    if 'app' in kwargs.keys():
-        app = kwargs['app']
     cluster_labels = np.array(cluster_labels, dtype=np.uint32)
     eye = load_Points(os.path.join(project_folder, "coordinates.points"))
     data_to_save = dict()
@@ -1504,7 +1672,7 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
         approx_vectors = np.array(approx_vectors)
         skewness = np.array(skewness)
         labels = np.array(labels)
-        neighbor_inds = np.array(neighbor_lbls)  # indeces of neighboring clusters
+        # neighbor_inds = np.array(neighbor_lbls)  # indeces of neighboring clusters
         neighbor_lbls = labels[neighbor_lbls]  # label referring to ommatidia_labels.npy
         # TODO: 3 scatter plots showing the three parameters
         no_nans = np.isnan(lens_area) == False
@@ -1529,7 +1697,7 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
     cone_cluster_data['approx_axis'] = approx_vectors.tolist()
     cone_cluster_data['skewness'] = skewness
     cone_cluster_data['label'] = labels
-    cone_cluster_data['neighbor_inds'] = neighbor_inds.tolist()  # index in this dataframe
+    # cone_cluster_data['neighbor_inds'] = neighbor_inds.tolist()  # index in this dataframe
     cone_cluster_data['neighbor_labels'] = neighbor_lbls.tolist()  # refers to ommatidia_labels.npy
     cone_cluster_data.to_csv(os.path.join(project_folder, "ommatidia_measurements.csv"))
     cone_cluster_data.to_pickle(os.path.join(project_folder, "ommatidia_measurements.pkl"))
@@ -1548,8 +1716,9 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
     interommatidial_angle_approx = dict()
     interommatidial_angle_anatomical = dict()
     orientations_dict = dict()
+    eye = load_Points(os.path.join(project_folder, "coordinates.points"))
+    cluster_lbls = np.load(os.path.join(project_folder, "ommatidia_labels.npy"))
     for num, cone in cone_cluster_data.iterrows():
-    # for num, cone in enumerate(cones):
         approx_IOAs = []
         anatomical_IOAs = []
         pairs = []
@@ -1560,116 +1729,68 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
             neighbor_inds = [int(val) for val in neighbor_inds]
         else:
             neighbor_inds = cone.neighbor_inds
-        # find average point point of intersection of anatomical axes
-        # use as center point
-        approx_centers = []
-        anatomical_centers = []
-        position1 = np.array([cone.x_center, cone.y_center, cone.z_center])
-        # positions += [position1]
+        # store the centerpoint between each cone
+        centers = []
         if isinstance(cone.approx_axis, str):
-            direction1 = np.array(cone.approx_axis[1:-1].split(",")).astype(float)
+            approx_direction = np.array(cone.approx_axis[1:-1].split(",")).astype(float)
         else:
-            direction1 = np.array(cone.approx_axis)
+            approx_direction = np.array(cone.approx_axis)
+        pts = eye.pts[cluster_lbls == num]
         for neighbor_ind in neighbor_inds:
-            neighbor_cone = cone_cluster_data.loc[neighbor_ind]
-            position2 = np.array(
-                [neighbor_cone.x_center, neighbor_cone.y_center, neighbor_cone.z_center])
-            for centers, var in zip(
-                    [approx_centers, anatomical_centers],
-                    ['approx_axis', 'anatomical_axis']):
+            pair = tuple(sorted([num, neighbor_ind]))
+            if pair not in pairs:
+                neighbor_cone = cone_cluster_data.loc[neighbor_ind]
+                neighbor_pts = eye.pts[cluster_lbls == neighbor_ind]
+                # let's get the anatomical IOA
+                # first, find the best fitting plane to the union of the two clusters
+                all_pts = np.append(pts, neighbor_pts, axis=0)
+                # using singular value decomposition, we can find the two principle components
+                # of all_pts, then project each cluster onto this basis
+                principle_components = np.linalg.svd(all_pts - all_pts.mean(0))[2]
+                pts_proj = np.dot(pts, principle_components)[:, :2]
+                neighbor_pts_proj = np.dot(neighbor_pts, principle_components)[:, :2]
+                # now, get the direction vectors for each projection using the first
+                # pricinple component of each projection
+                pts_direction = np.linalg.svd(pts_proj - pts_proj.mean(0))[2][0]
+                neighbor_pts_direction = np.linalg.svd(
+                    neighbor_pts_proj - neighbor_pts_proj.mean(0))[2][0]                
+                # now, the anatomical IOA is the angle between these direction vectors
+                anatomical_IOA = angle_between(pts_direction, neighbor_pts_direction)
+                # now, the approx IOA:
+                # get the approx direction vector from the neighboring cone
                 if isinstance(neighbor_cone.approx_axis, str):
-                    direction2 = np.array(neighbor_cone[var][1:-1].split(",")).astype(float)
+                    neighbor_approx_direction = np.array(
+                        neighbor_cone.approx_axis[1:-1].split(",")).astype(float)
                 else:
-                    direction2 = np.array(neighbor_cone[var])
-                midpoint = skew_vector_intersection(
-                    position1, direction1, position2, direction2)
-                centers += [midpoint]
-        approx_centers = np.array(approx_centers)
-        anatomical_centers = np.array(anatomical_centers)
-        # centers -= center
-        # positions = np.array(positions)
-        # positions -= center
-        # directions = np.array(directions)
-        # center = np.array([0, 0, 0])[np.newaxis]
-        # scatter = ScatterPlot3d(centers, size=5, color=(0, 0, 1, 1), app=app)
-        # scatter2 = ScatterPlot3d(positions, size=5, color=(0, 1, 0, 1),
-        #                          app=app, window=scatter.window)
-        # scatter3 = ScatterPlot3d(center, size=10, color=(1, 1, 1, 1),
-        #                          app=app, window=scatter.window)
-        # magn = 5
-        # for position, direction in zip(positions, directions):
-        #     # plt1 = gl.GLLinePlotItem(pos=ptsa, color=(1, 0, 0, 1),
-        #     #                          width=5, antialias=True)
-        #     # scatter.window.addItem(plt1)
-        #     posa = position + magn/2 * direction
-        #     posb = position - magn/2 * direction
-        #     pos = np.array([posa, posb])
-        #     line = gl.GLLinePlotItem(pos=pos, color=(1, 1, 1, 1), width=3, antialias=True)
-        #     scatter3.window.addItem(line)
-        # scatter3.show()
-        for neighbor in neighbor_inds:
-            pair = tuple(sorted([num, neighbor]))
-            if pair not in pairs_tested:
-                neighbor_cone = cone_cluster_data.loc[neighbor]
-                # get angle of center with respect to neighbor center
+                    neighbor_approx_direction = np.array(neighbor_cone.approx_axis)
+                # get angle between these vectors, accounting for potential skewness
+                # approx_IOA = angle_between_skew_vectors(
+                #     pts.mean(0), approx_direction,
+                #     neighbor_pts.mean(0), neighbor_approx_direction
+                #     )
+                all_vectors = np.append(
+                    approx_direction[np.newaxis],
+                    neighbor_approx_direction[np.newaxis], axis=0)
+                principle_components = np.linalg.svd(all_vectors)[2]
+                approx_direction_proj = np.dot(approx_direction, principle_components)[:2]
+                neighbor_approx_direction_proj = np.dot(
+                    neighbor_approx_direction, principle_components)[:2]
+                approx_IOA = angle_between(
+                    approx_direction_proj, neighbor_approx_direction_proj)
+                # now, measure the orientation in reference to the polar angles
                 th1, ph1 = cone.theta_center, cone.phi_center
                 th2, ph2 = neighbor_cone.theta_center, neighbor_cone.phi_center
                 orientation = np.arctan2(ph2 - ph1, th2 - th1)
-                position1 = np.array(
-                    [cone.x_center, cone.y_center, cone.z_center])
-                if isinstance(cone.anatomical_axis, str):
-                    direction1 = np.array(cone.anatomical_axis[1:-1].split(",")).astype(float)
-                else:
-                    direction1 = np.array(cone.anatomical_axis)
-                position2 = np.array(
-                    [neighbor_cone.x_center,
-                     neighbor_cone.y_center,
-                     neighbor_cone.z_center])
-                if isinstance(neighbor_cone.anatomical_axis, str):
-                    direction2 = np.array(neighbor_cone.anatomical_axis[1:-1].split(",")).astype(float)
-                else:
-                    direction2 = np.array(neighbor_cone.anatomical_axis)
-                # get minimum angle between neighboring ommatidial axes
-                # center = skew_vector_intersection(
-                anatomical_angle = angle_between_skew_vectors(
-                    position1, direction1,
-                    position2, direction2)
-                # anatomical_angle = angle_between(
-                #     position1 - center, position2 - center)
-                if isinstance(cone.approx_axis, str):
-                    direction1 = np.array(cone.approx_axis[1:-1].split(",")).astype(float)
-                else:
-                    direction1 = np.array(cone.approx_axis)
-                if isinstance(neighbor_cone.approx_axis, str):
-                    direction2 = np.array(neighbor_cone.approx_axis[1:-1].split(",")).astype(float)
-                else:
-                    direction2 = np.array(neighbor_cone.approx_axis)
-                approx_angle = angle_between_skew_vectors(
-                    position1, direction1,
-                    position2, direction2)
-                # center = skew_vector_intersection(
-                #     position1, direction1,
-                #     position2, direction2)
-                # approx_angle = angle_between(
-                #     position1 - center, position2 - center)
-                interommatidial_angle_anatomical[pair] = anatomical_angle
-                interommatidial_angle_approx[pair] = approx_angle
-                orientations_dict[pair] = orientation
-                pairs_tested.add(pair)
+                orientations += [orientation]
+                anatomical_IOAs += [anatomical_IOA]
+                approx_IOAs += [approx_IOA]
                 pairs += [pair]
-            else:
-                anatomical_angle = interommatidial_angle_anatomical[pair]
-                approx_angle = interommatidial_angle_approx[pair]
-                orientation = orientations_dict[pair]
-            orientations += [orientation]
-            anatomical_IOAs += [anatomical_angle]
-            approx_IOAs += [approx_angle]
         print_progress(num, len(labels))
     print("\n")
-    pairs_tested = np.array(list(pairs_tested))
-    IOA_approx = np.array(list(interommatidial_angle_approx.values()))
-    IOA_anatomical = np.array(list(interommatidial_angle_anatomical.values()))
-    orientations = np.array(list(orientations_dict.values()))
+    pairs_tested = np.array(list(pairs))
+    IOA_approx = np.array(list(approx_IOAs))
+    IOA_anatomical = np.array(list(anatomical_IOAs))
+    orientations = np.array(list(orientations))
     data_to_save = dict()
     cols = ['cluster1', 'cluster2',
             'cluster1_x', 'cluster1_y', 'cluster1_z',
