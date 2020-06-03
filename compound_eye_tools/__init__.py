@@ -227,7 +227,7 @@ class Points():
 
     def __init__(self, arr, center_points=True,
                  polar=None, spherical_conversion=True,
-                 rotate_com=True, vals=None):
+                 rotate_com=True, vals=None, interp_func=None):
         self.pts = np.array(arr)
         if arr.ndim > 1:
             assert self.pts.shape[1] == 3, ("Input array should have shape "
@@ -248,7 +248,7 @@ class Points():
         self.polar = None
         self.raster = None
         self.xvals, self.yvals = None, None
-        self.interp_func = None
+        self.interp_func = interp_func
         if polar is not None:
             self.polar = polar
             self.theta, self.phi, self.radii = self.polar.T
@@ -287,6 +287,10 @@ class Points():
             out = Points(self.pts[key], polar=self.polar[key],
                          rotate_com=False, spherical_conversion=False,
                          vals=self.vals[key])
+        out.residuals = self.residuals[key]
+        out.original_pts = self.original_pts
+        out.interp_func = self.interp_func
+        out.surface = self.surface[key]
         return out
 
     def spherical(self, center=None):
@@ -413,7 +417,6 @@ class Points():
             self.radii <= self.surface_upper_bound,
             self.radii > self.surface_lower_bound)
         self.cross_section = self[cross_section_inds]
-        self.cross_section.interp_func = self.interp_func
 
     def save(self, fn):
         """Save using pickle."""
@@ -1115,7 +1118,7 @@ def import_stack(folder, preview=True, **kwargs):
             eye = filter_and_preview_images(filenames)
         # 3d scatter plot of the included coordinates
         if preview:
-            if eye.vals is None:
+            if eye.vals is None or len(set(eye.vals)) == 1:
                 scatter = ScatterPlot3d(eye.pts)
             else:
                 scatter = ScatterPlot3d(eye.pts, colorvals=eye.vals)
@@ -1145,7 +1148,7 @@ def get_cross_section(eye, preview=True, thickness=.3, **kwargs):
             # pg.image(img)
             # plt.imshow(img)
             # plt.show()
-            if cross_section.vals is None:
+            if cross_section.vals is None or len(set(cross_section.vals)) == 1:
                 scatter = ScatterPlot3d(cross_section.pts)
             else:
                 scatter = ScatterPlot3d(cross_section.pts, colorvals=cross_section.vals)
@@ -1300,7 +1303,8 @@ def find_nearest_neighbors(pts, centers, pad=.1):
 def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     save = False
     # pixel_length = .001
-    image_size = 10**6.5
+    image_size = 10**6
+    image_size = 500000
     # find pixel size for a given image size
     if 'project_folder' in kwargs.keys():
         project_folder = kwargs['project_folder']
@@ -1331,6 +1335,16 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     dist_trees = []
     minimum_facets = 500
     maximum_facets = 50000
+    # the shell method doesn't work for ommatidia that are very askew
+    # for skew ommatidia, let's try an older method:
+    # get the center points of ommatidia using the cross section from the previous step
+    # make distance tree of the whole eye
+    # for each center, 
+        # find all points within generous radius of the center
+        # rotate a cylinder (radius ~ .5 * avg. distance to neighbors, height = 1.1 * thickness)
+        # settle on the cylinder orientation with the most points contained.
+        # label these points with the cluster label
+    breakpoint()
     for cross_section in [eye[inner_shell], eye[outer_shell]]:
         save = False
         while not save:
@@ -1495,9 +1509,10 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
             if dist < max_dist:
                 xs, ys = np.array([inner_pts[t0_ind, :2], outer_pts[t1_ind, :2]]).T
                 plt.plot(xs, ys, 'k-')
-                # plt.scatter(xs, ys, c=[0, 1], marker='.', cmap='viridis')
+                plt.scatter(xs, ys, c=[0, 1], marker='.', cmap='viridis')
         plt.gca().set_aspect('equal')
         plt.show()
+    breakpoint()
     pairs = pairs[dists <= max_dist]
     # pairs will allow us to convert from inner cluster labels to outer cluster labels
     # now the inside and outside labels are the same
@@ -1514,13 +1529,16 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     all_inds = np.zeros(outer_shell.shape[0])
     all_inds[inner_shell] = inner_lbls
     all_inds[outer_shell] = outer_lbls
+    no_nans = np.isnan(all_inds) == False  # remove nans from both labels and coordinate data
+    eye = eye[no_nans]
+    all_inds = all_inds[no_nans]
     if preview:
         # get random colorvals for scatterplot
-        no_nans = np.isnan(all_inds) == False
-        rand_vals = np.random.permutation(np.arange(0, all_inds[no_nans].max() + 1)).astype(int)
-        colorvals = rand_vals[all_inds[no_nans].astype(int)]
-        polar_scatter = ScatterPlot3d(eye.pts[no_nans], colorvals=colorvals, cmap=plt.cm.tab20)
+        rand_vals = np.random.permutation(np.arange(0, all_inds.max() + 1)).astype(int)
+        colorvals = rand_vals[all_inds.astype(int)]
+        polar_scatter = ScatterPlot3d(eye.pts, colorvals=colorvals, cmap=plt.cm.tab20)
         polar_scatter.show()
+    eye.save(os.path.join(project_folder, "coordinates.points"))
     np.save(os.path.join(project_folder, "ommatidia_labels.npy"), all_inds)
     return all_inds
 
@@ -1530,7 +1548,7 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
         project_folder = kwargs['project_folder']
     else:
         project_folder = os.getcwd()
-    cluster_labels = np.array(cluster_labels, dtype=np.uint32)
+    cluster_labels = np.array(cluster_labels)
     eye = load_Points(os.path.join(project_folder, "coordinates.points"))
     data_to_save = dict()
     # cols = ['x_center', 'y_center', 'z_center', 'theta_center',
@@ -1564,8 +1582,9 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
     cone_cluster_data = pd.DataFrame.from_dict(data_to_save)
     cone_cluster_data.to_csv(os.path.join(project_folder, "ommatidia_measurements.csv"))
     cone_centers = np.array(cone_centers)
-    tree = spatial.KDTree(cone_centers)
-    dists, inds = tree.query(cone_centers, k=13)
+    no_nans = np.isnan(cone_centers).sum(1) == 0
+    tree = spatial.KDTree(cone_centers[no_nans])
+    dists, inds = tree.query(cone_centers[no_nans], k=13)
     dists = dists[:, 1:]
     upper_limit = np.percentile(dists.flatten(), 99)
     dists = dists[dists < upper_limit].flatten() 
@@ -1724,21 +1743,23 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
     orientations = []
     # for neighbor in cone.neighbor_lbls:
     for num, cone in cone_cluster_data.iterrows():
-        if isinstance(cone.neighbor_inds, str):
-            neighbor_inds = cone.neighbor_inds[1:-1].split(",")
-            neighbor_inds = [int(val) for val in neighbor_inds]
+        if isinstance(cone.neighbor_labels, str):
+            neighbor_labels = cone.neighbor_labels[1:-1].split(",")
+            neighbor_labels = [int(float(val)) for val in neighbor_labels]
         else:
-            neighbor_inds = cone.neighbor_inds
+            neighbor_labels = cone.neighbor_labels
         # store the centerpoint between each cone
         if isinstance(cone.approx_axis, str):
             approx_direction = np.array(cone.approx_axis[1:-1].split(",")).astype(float)
         else:
             approx_direction = np.array(cone.approx_axis)
-        pts = eye.pts[cluster_lbls == num]
-        for neighbor_ind in neighbor_inds:
-            pair = tuple(sorted([num, neighbor_ind]))
+        pts = eye.pts[cluster_lbls == cone.label]
+        lbl = cone.label
+        for neighbor_ind in neighbor_labels:
+            pair = tuple(sorted([lbl, neighbor_ind]))
             if pair not in pairs:
-                neighbor_cone = cone_cluster_data.loc[neighbor_ind]
+                i = np.where(cone_cluster_data.label.values == neighbor_ind)[0][0]
+                neighbor_cone = cone_cluster_data.loc[i]
                 neighbor_pts = eye.pts[cluster_lbls == neighbor_ind]
                 # let's get the anatomical IOA
                 # first, find the best fitting plane to the union of the two clusters
@@ -1784,7 +1805,7 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
                 anatomical_IOAs += [anatomical_IOA]
                 approx_IOAs += [approx_IOA]
                 pairs += [pair]
-        print_progress(num, len(labels))
+        print_progress(num + 1, len(labels))
     print("\n")
     pairs_tested = np.array(list(pairs))
     IOA_approx = np.array(list(approx_IOAs))
@@ -1802,6 +1823,8 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
     for num, (pair, approx, anatomical) in enumerate(
             zip(pairs_tested, IOA_approx, IOA_anatomical)):
         ind1, ind2 = pair
+        ind1 = np.where(cone_cluster_data.label.values == ind1)[0][0]
+        ind2 = np.where(cone_cluster_data.label.values == ind2)[0][0]
         cluster1 = cone_cluster_data.loc[ind1]
         cluster2 = cone_cluster_data.loc[ind2]
         for lbl, vals in zip(
