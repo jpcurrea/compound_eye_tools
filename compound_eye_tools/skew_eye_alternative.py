@@ -154,6 +154,25 @@ def unit_vector(vector):
     return vector / np.linalg.norm(vector)
 
 
+def intersection(pos1, dir1, pos2, dir2):
+    """ Returns intersection point given two 3D vectors, 
+    assuming it must intersect."""
+    # test values
+    # pos1 = np.array([6, 8, 4])
+    # pos2 = np.array([6, 8, 2])
+    # dir1 = -np.array([6, 7, 0])
+    # dir2 = -np.array([6, 7, 4])
+    # find vector between the two position vectors
+    dist = pos2 - pos1
+    # the offset is given by a proportion of cross products
+    offset = np.linalg.norm(np.cross(dir2, dist))/(np.linalg.norm(np.cross(dir1, dir2))) * dir1
+    # the direction of the offset is positive if the two cross products are in the same direction 
+    positive = np.all((np.cross(dir2, dist) > 0) == (np.cross(dir2, dir1) > 0))
+    if not positive:
+        offset *= -1
+    return pos1 + offset
+
+
 def angle_between(v1, v2):
     """ Returns the angle in radians between vectors 'v1' and 'v2'::
 
@@ -227,7 +246,7 @@ class Points():
 
     def __init__(self, arr, center_points=True,
                  polar=None, spherical_conversion=True,
-                 rotate_com=True, vals=None):
+                 rotate_com=True, vals=None, interp_func=None):
         self.pts = np.array(arr)
         if arr.ndim > 1:
             assert self.pts.shape[1] == 3, ("Input array should have shape "
@@ -248,7 +267,7 @@ class Points():
         self.polar = None
         self.raster = None
         self.xvals, self.yvals = None, None
-        self.interp_func = None
+        self.interp_func = interp_func
         if polar is not None:
             self.polar = polar
             self.theta, self.phi, self.radii = self.polar.T
@@ -287,6 +306,10 @@ class Points():
             out = Points(self.pts[key], polar=self.polar[key],
                          rotate_com=False, spherical_conversion=False,
                          vals=self.vals[key])
+        out.residuals = self.residuals[key]
+        out.original_pts = self.original_pts
+        out.interp_func = self.interp_func
+        out.surface = self.surface[key]
         return out
 
     def spherical(self, center=None):
@@ -413,7 +436,6 @@ class Points():
             self.radii <= self.surface_upper_bound,
             self.radii > self.surface_lower_bound)
         self.cross_section = self[cross_section_inds]
-        self.cross_section.interp_func = self.interp_func
 
     def save(self, fn):
         """Save using pickle."""
@@ -1115,7 +1137,7 @@ def import_stack(folder, preview=True, **kwargs):
             eye = filter_and_preview_images(filenames)
         # 3d scatter plot of the included coordinates
         if preview:
-            if eye.vals is None:
+            if eye.vals is None or len(set(eye.vals)) == 1:
                 scatter = ScatterPlot3d(eye.pts)
             else:
                 scatter = ScatterPlot3d(eye.pts, colorvals=eye.vals)
@@ -1145,7 +1167,7 @@ def get_cross_section(eye, preview=True, thickness=.3, **kwargs):
             # pg.image(img)
             # plt.imshow(img)
             # plt.show()
-            if cross_section.vals is None:
+            if cross_section.vals is None or len(set(cross_section.vals)) == 1:
                 scatter = ScatterPlot3d(cross_section.pts)
             else:
                 scatter = ScatterPlot3d(cross_section.pts, colorvals=cross_section.vals)
@@ -1232,6 +1254,7 @@ def find_nearest_neighbors(pts, centers, pad=.1):
     all_inds = np.empty(len(pts), dtype=float)
     all_inds.fill(np.nan)
     all_dists = np.copy(all_inds)
+    num = 0
     for theta_ind, (theta_min, theta_center, theta_max) in enumerate(zip(
             theta_boundaries[:-1], theta_centers, theta_boundaries[1:])):
         for phi_ind, (phi_min, phi_center, phi_max) in enumerate(zip(
@@ -1251,11 +1274,50 @@ def find_nearest_neighbors(pts, centers, pad=.1):
             # convert to rectangular coordinates to fix spherical distortion
             pts_near_rect = spherical_to_cartesian(np.copy(pts_near))
             centers_near_rect = spherical_to_cartesian(np.copy(centers_near))
-            # make distance tree of centers_near and query nearest pts
+            # remove centerpoints with nans
+            no_nans = np.isnan(centers_near_rect) == False
+            centers_near_rect = centers_near_rect[np.any(no_nans, axis=1)]
+            # find desired radius (ideally, will contain neighbors)
             centers_tree = spatial.KDTree(centers_near_rect)
-            dists_near, inds_near = centers_tree.query(pts_near_rect)
-            all_inds[pts_inds] = np.where(centers_inds)[0][inds_near]
-            all_dists[pts_inds] = dists_near
+            neighbor_dists, neighbor_inds = centers_tree.query(centers_near_rect, k=2)
+            radius = 1.5 * np.median(neighbor_dists[:, 1])
+            pts_tree = spatial.KDTree(pts_near_rect)  # use to find points near center
+            for center in centers_near_rect:
+                # find ball of pts_near_rect within radius of center
+                nearby_pts_inds = np.array(pts_tree.query_ball_point(center, r=radius))
+                if len(nearby_pts_inds) > 3:
+                    nearby_pts = pts_near_rect[nearby_pts_inds]
+                    nearby_centers_inds = np.array(centers_tree.query_ball_point(center, r=radius))
+                    nearby_centers = centers_near_rect[nearby_centers_inds]
+                    new_spherical = cartesian_to_spherical(nearby_pts - center)
+                    # use spectral clustering to find clusters in ball
+                    clusterer = cluster.SpectralClustering(n_clusters=len(nearby_centers),
+                        assign_labels='discretize', random_state=0).fit(nearby_pts)
+                    labels = clusterer.labels_
+                    # find cluster nearest the center point
+                    cluster_means = []
+                    labels_set = sorted(set(labels))
+                    for lbl in labels_set:
+                        cluster_means += [nearby_pts[labels == lbl].mean(0)]
+                    cluster_means = np.array(cluster_means)
+                    cluster_dists = np.linalg.norm(cluster_means - center, axis=1)
+                    center_label = labels_set[np.argmin(cluster_dists)]
+                    # get index for pts in cluster
+                    pts_center_inds = np.where(pts_inds)[0][nearby_pts_inds][labels == center_label]
+                    all_inds[pts_center_inds] = num
+                    all_dists[pts_center_inds] = np.linalg.norm(nearby_pts[labels == center_label] - center, axis=1)
+                    num += 1
+                    print_progress(num, len(centers))
+                    # troubleshooting:
+                    # scatter = ScatterPlot3d(nearby_pts - center, size=5, colorvals=labels)
+                    # scatter_centers = ScatterPlot3d(nearby_centers - center,
+                    #                                 window=scatter.window,
+                    #                                 size=10, color=(1, 0, 0, 1))
+                    # scatter.show()
+            # centers_tree = spatial.KDTree(centers_near_rect)
+            # dists_near, inds_near = centers_tree.query(pts_near_rect)
+            # all_inds[pts_inds] = np.where(centers_inds)[0][inds_near]
+            # all_dists[pts_inds] = dists_near
             print_progress(theta_ind * phi_num_segments + phi_ind + 1,
                            theta_num_segments * phi_num_segments)
     return all_inds, all_dists
@@ -1300,7 +1362,8 @@ def find_nearest_neighbors(pts, centers, pad=.1):
 def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     save = False
     # pixel_length = .001
-    image_size = 10**6.5
+    image_size = 10**6
+    image_size = 350000
     # find pixel size for a given image size
     if 'project_folder' in kwargs.keys():
         project_folder = kwargs['project_folder']
@@ -1329,198 +1392,347 @@ def find_ommatidia_clusters(cross_section, preview=True, **kwargs):
     outer_shell = eye.residuals >= 0
     labels = []
     dist_trees = []
-    minimum_facets = 500
-    maximum_facets = 50000
-    for cross_section in [eye[inner_shell], eye[outer_shell]]:
-        save = False
-        while not save:
-            thetas = []
-            phis = []
-            segment_image_size = image_size / (theta_num_segments * phi_num_segments)
-            print("Processing segments of the polar coordinates: ")
-            for theta_ind, (theta_min, theta_center, theta_max) in enumerate(zip(
-                    theta_boundaries[:-1], theta_centers, theta_boundaries[1:])):
-                for phi_ind, (phi_min, phi_center, phi_max) in enumerate(zip(
-                        phi_boundaries[:-1], phi_centers, phi_boundaries[1:])):
-                    cont = False
-                    while not cont:
-                        inds = ((cross_section.theta > theta_min - theta_pad) *
-                                (cross_section.theta < theta_max + theta_pad) *
-                                (cross_section.phi > phi_min - phi_pad) *
-                                (cross_section.phi < phi_max + phi_pad))
-                        cross_section_segment = cross_section.pts[inds]
-                        phi_displacement = phi_center - np.pi
-                        theta_displacement = theta_center - np.pi/2
-                        rot = rotate(cross_section_segment, phi_displacement, axis=2).T
-                        rot = rotate(rot, theta_displacement, axis=1).T
+    # minimum_facets = 500
+    # maximum_facets = 50000
+    minimum_facets = 2000
+    maximum_facets = 8000
+    # the shell method doesn't work for ommatidia that are very askew
+    # for skew ommatidia, let's try an older method:
+    # get the center points of ommatidia using the cross section from the previous step
+    # make distance tree of the whole eye
+    # for each center, 
+        # find all points within generous radius of the center
+        # rotate a cylinder (radius ~ .5 * avg. distance to neighbors, height = 1.1 * thickness)
+        # settle on the cylinder orientation with the most points contained.
+        # label these points with the cluster label
+
+    save = False
+    while not save:
+        thetas = []
+        phis = []
+        segment_image_size = image_size / (theta_num_segments * phi_num_segments)
+        print("Processing segments of the polar coordinates: ")
+        for theta_ind, (theta_min, theta_center, theta_max) in enumerate(zip(
+                theta_boundaries[:-1], theta_centers, theta_boundaries[1:])):
+            for phi_ind, (phi_min, phi_center, phi_max) in enumerate(zip(
+                    phi_boundaries[:-1], phi_centers, phi_boundaries[1:])):
+                cont = False
+                while not cont:
+                    inds = ((cross_section.theta > theta_min - theta_pad) *
+                            (cross_section.theta < theta_max + theta_pad) *
+                            (cross_section.phi > phi_min - phi_pad) *
+                            (cross_section.phi < phi_max + phi_pad))
+                    cross_section_segment = cross_section.pts[inds]
+                    phi_displacement = phi_center - np.pi
+                    theta_displacement = theta_center - np.pi/2
+                    rot = rotate(cross_section_segment, phi_displacement, axis=2).T
+                    rot = rotate(rot, theta_displacement, axis=1).T
+                    polar1 = cartesian_to_spherical(rot)
+                    segment = Points(rot, rotate_com=False, polar=polar1,
+                                     spherical_conversion=False,
+                                     vals=cross_section.vals[inds])
+                    # 3. use low pass filter method from Eye object in fly_eye to find
+                    # centers of cone clusters/ommatidia.
+                    # a. rasterize the image so that we can use our image processing
+                    # algorithm in fly_eye
+                    img, (theta_vals, phi_vals) = segment.rasterize(image_size=segment_image_size)
+                    mask = img > 0
+                    mask = convex_hull_image(mask)
+                    cross_section_eye = fe.Eye(img, pixel_size=segment.raster_pixel_length,
+                                               mask=mask)
+                    cross_section_eye.theta_vals, cross_section_eye.phi_vals = theta_vals, phi_vals
+                    cross_section_eye.get_ommatidia(
+                        max_facets=maximum_facets / (theta_num_segments * phi_num_segments),
+                        min_facets=minimum_facets / (theta_num_segments * phi_num_segments),
+                        method=1, method1_sigma=2)
+                    if cross_section_eye.ommatidia is not None:
+                        segment_phis, segment_thetas = cross_section_eye.ommatidia
+                        segment_thetas += theta_vals.min()
+                        segment_phis += phi_vals.min()
+                        segment_polar = np.array([segment_thetas, segment_phis, np.ones(len(segment_phis))]).T
+                        segment_pts = spherical_to_cartesian(segment_polar)
+                        rot = rotate(segment_pts, -theta_displacement, axis=1).T
+                        rot = rotate(rot, -phi_displacement, axis=2).T
                         polar1 = cartesian_to_spherical(rot)
-                        segment = Points(rot, rotate_com=False, polar=polar1,
-                                         spherical_conversion=False,
-                                         vals=cross_section.vals[inds])
-                        # 3. use low pass filter method from Eye object in fly_eye to find
-                        # centers of cone clusters/ommatidia.
-                        # a. rasterize the image so that we can use our image processing
-                        # algorithm in fly_eye
-                        img, (theta_vals, phi_vals) = segment.rasterize(image_size=segment_image_size)
-                        mask = img > 0
-                        mask = convex_hull_image(mask)
-                        cross_section_eye = fe.Eye(img, pixel_size=segment.raster_pixel_length,
-                                                   mask=mask)
-                        cross_section_eye.theta_vals, cross_section_eye.phi_vals = theta_vals, phi_vals
-                        cross_section_eye.get_ommatidia(
-                            max_facets=maximum_facets / (theta_num_segments * phi_num_segments),
-                            min_facets=minimum_facets / (theta_num_segments * phi_num_segments),
-                            method=1)
-                        if cross_section_eye.ommatidia is not None:
-                            segment_phis, segment_thetas = cross_section_eye.ommatidia
-                            segment_thetas += theta_vals.min()
-                            segment_phis += phi_vals.min()
-                            segment_polar = np.array([segment_thetas, segment_phis, np.ones(len(segment_phis))]).T
-                            segment_pts = spherical_to_cartesian(segment_polar)
-                            rot = rotate(segment_pts, -theta_displacement, axis=1).T
-                            rot = rotate(rot, -phi_displacement, axis=2).T
-                            polar1 = cartesian_to_spherical(rot)
-                            theta, phi, _ = polar1.T
-                            within_bounds = ((theta >= theta_min) *
-                                             (theta < theta_max) *
-                                             (phi >= phi_min) *
-                                             (phi < phi_max))
-                            thetas += [theta[within_bounds]]
-                            phis += [phi[within_bounds]]
-                            if preview:
-                                plt.pcolormesh(theta_vals, phi_vals, img.T)
-                                plt.scatter(segment_thetas, segment_phis, color='r', marker='.')
-                                plt.gca().set_aspect('equal')
-                                plt.tight_layout()
-                                plt.xlabel("polar angle (theta)")
-                                plt.ylabel("azimuthal angle (phi)")
-                                plt.title("Eye Segment with Ommatidial Centers")
-                                plt.show()
-                            print("Continue with the same minimum and maximum ommatidial counts? ")
-                            response = None
-                            while response not in ['0', '1']:
-                                response = input("Press <1> for yes or <0> to analyze "
-                                                 "the image using a different limits: ")
-                            cont = response == '1'
-                        else:
-                            print("Failed to extract ommatidia. Choose new ommatidia count limits: ")
-                            cont = False
-                        if not cont:
-                            minimum_facets = input("What is the minimum number of ommatidia? ")
-                            success = False
-                            while success is False:
-                                try:
-                                    minimum_facets = int(minimum_facets)
-                                    success = True
-                                except:
-                                    minimum_facets = input("The response must be a whole number: ")
-                            maximum_facets = input("What is the maximum number of ommatidia? ")
-                            success = False
-                            while success is False:
-                                try:
-                                    maximum_facets = int(maximum_facets)
-                                    success = True
-                                except:
-                                    maximum_facets = input("The response must be a whole number: ")
-                        print_progress(theta_ind * phi_num_segments + phi_ind + 1,
-                                       theta_num_segments * phi_num_segments)
-            print("\n")
-            thetas = np.concatenate(thetas)
-            phis = np.concatenate(phis)
-            cross_section.fit_surface()
-            radii = cross_section.interp_func(thetas, phis)
-            img, (theta_vals, phi_vals) = cross_section.rasterize(image_size=image_size)
-            if preview:
-                plt.pcolormesh(theta_vals, phi_vals, img.T)
-                plt.scatter(thetas, phis, color='r', marker='.')
-                plt.gca().set_aspect('equal')
-                plt.tight_layout()
-                plt.xlabel("polar angle (theta)")
-                plt.ylabel("azimuthal angle (phi)")
-                plt.show()
-            centers = np.array([thetas, phis, radii]).T
-            # tree = spatial.KDTree(centers)
-            # find clusters here and now! by finding point nearest each center
-            # dists, inds = [], []
-            # # this takes a lot of time and RAM so break it into chunks
-            # chunks = int(np.round(cross_section.polar.shape[0] / 10**4))
-            # chunks = np.array_split(cross_section.polar[:, :2], chunks, axis=0)
-            # old_prop = 0
-            # for num, coords in enumerate(chunks):
-            #     d, i = tree.query(coords, k=1)
-            #     dists += [d]
-            #     inds += [i]
-            #     prop = int(100 * ((num + 1) / len(chunks)))
-            #     print_progress(num + 1, len(chunks))
-            # print(".\n")
-            # inds = np.concatenate(inds)
-            # if preview:
-            #     # get random colorvals for scatterplot
-            #     cvals = {}
-            #     rand_vals = np.random.choice(list(set(inds)), len(set(inds)), replace=False)
-            #     for val, rand_val in zip(set(inds), rand_vals):
-            #         cvals[val] = rand_val
-            #     color_vals = np.array([cvals[ind] for ind in  inds])
-            #     polar_scatter = ScatterPlot3d(cross_section.pts, app=app,
-            #                                   colorvals=color_vals, cmap=plt.cm.tab20)
-            #     polar_scatter.show()
-            # segment_labels = inds
-            print("Continue with this image size? ")
-            response = None
-            while response not in ['0', '1']:
-                response = input("Press <1> for yes or <0> to rasterize "
-                                 "the image using a different image size: ")
-            save = response == '1'
-            if not save:
-                image_size = input("What image size should we use (pixel count)? ")
-                success = False
-                while success is False:
-                    try:
-                        image_size = int(image_size)
-                        success = True
-                    except:
-                        image_size = input("The response must be a whole number: ")
-            else:
-                dist_trees += [centers]
-                # dist_trees += [tree]
-                # labels += [segment_labels]
-    # inner_tree, outer_tree = dist_trees
-    # inner_pts, outer_pts = inner_tree.data, outer_tree.data
-    inner_pts, outer_pts = dist_trees
-    inner_pts, outer_pts, dists = find_pairs(inner_pts, outer_pts)
-    pairs = np.array([np.arange(len(inner_pts)), np.arange(len(inner_pts))]).T.astype(int)
-    max_dist = 1.5 * np.median(dists)
-    if preview:
-        for (t0_ind, t1_ind), dist in zip(pairs, dists):
-            if dist < max_dist:
-                xs, ys = np.array([inner_pts[t0_ind, :2], outer_pts[t1_ind, :2]]).T
-                plt.plot(xs, ys, 'k-')
-                # plt.scatter(xs, ys, c=[0, 1], marker='.', cmap='viridis')
-        plt.gca().set_aspect('equal')
-        plt.show()
-    pairs = pairs[dists <= max_dist]
-    # pairs will allow us to convert from inner cluster labels to outer cluster labels
-    # now the inside and outside labels are the same
-    print("Finding clusters of points near ommatidia centers of inside shell: ")
-    thickness = np.diff(np.percentile(eye.residuals, [.5, 99.5]))[0]
-    # why is this not working at all? troubleshoot find_nearest_neighbors
-    inner_lbls, inner_dists = find_nearest_neighbors(eye[inner_shell].polar, inner_pts, .1)
-    print("\n")
-    print("Finding clusters of points near ommatidia centers of outside shell: ")
-    outer_lbls, outer_dists = find_nearest_neighbors(eye[outer_shell].polar, outer_pts, .1)
-    print("\n")
-    # inner_lbls, outer_lbls = labels
-    # new_inner_lbls = inds[inner_lbls]
-    all_inds = np.zeros(outer_shell.shape[0])
-    all_inds[inner_shell] = inner_lbls
-    all_inds[outer_shell] = outer_lbls
+                        theta, phi, _ = polar1.T
+                        within_bounds = ((theta >= theta_min) *
+                                         (theta < theta_max) *
+                                         (phi >= phi_min) *
+                                         (phi < phi_max))
+                        thetas += [theta[within_bounds]]
+                        phis += [phi[within_bounds]]
+                        if preview:
+                            plt.pcolormesh(theta_vals, phi_vals, img.T)
+                            plt.scatter(segment_thetas, segment_phis, color='r', marker='.')
+                            plt.gca().set_aspect('equal')
+                            plt.tight_layout()
+                            plt.xlabel("polar angle (theta)")
+                            plt.ylabel("azimuthal angle (phi)")
+                            plt.title("Eye Segment with Ommatidial Centers")
+                            plt.show()
+                        print("Continue with the same minimum and maximum ommatidial counts? ")
+                        response = None
+                        while response not in ['0', '1']:
+                            response = input("Press <1> for yes or <0> to analyze "
+                                             "the image using a different limits: ")
+                        cont = response == '1'
+                    else:
+                        print("Failed to extract ommatidia. Choose new ommatidia count limits: ")
+                        cont = False
+                    if not cont:
+                        minimum_facets = input("What is the minimum number of ommatidia? ")
+                        success = False
+                        while success is False:
+                            try:
+                                minimum_facets = int(minimum_facets)
+                                success = True
+                            except:
+                                minimum_facets = input("The response must be a whole number: ")
+                        maximum_facets = input("What is the maximum number of ommatidia? ")
+                        success = False
+                        while success is False:
+                            try:
+                                maximum_facets = int(maximum_facets)
+                                success = True
+                            except:
+                                maximum_facets = input("The response must be a whole number: ")
+                    print_progress(theta_ind * phi_num_segments + phi_ind + 1,
+                                   theta_num_segments * phi_num_segments)
+        print("\n")
+        thetas = np.concatenate(thetas)
+        phis = np.concatenate(phis)
+        cross_section.fit_surface()
+        radii = cross_section.interp_func(thetas, phis)
+        radii = eye.interp_func(thetas, phis)
+        img, (theta_vals, phi_vals) = cross_section.rasterize(image_size=image_size)
+        if preview:
+            plt.pcolormesh(theta_vals, phi_vals, img.T)
+            plt.scatter(thetas, phis, color='r', marker='.')
+            plt.gca().set_aspect('equal')
+            plt.tight_layout()
+            plt.xlabel("polar angle (theta)")
+            plt.ylabel("azimuthal angle (phi)")
+            plt.show()
+        centers = np.array([thetas, phis, radii]).T
+        print("Continue with this image size? ")
+        response = None
+        while response not in ['0', '1']:
+            response = input("Press <1> for yes or <0> to rasterize "
+                             "the image using a different image size: ")
+        save = response == '1'
+        if not save:
+            image_size = input("What image size should we use (pixel count)? ")
+            success = False
+            while success is False:
+                try:
+                    image_size = int(image_size)
+                    success = True
+                except:
+                    image_size = input("The response must be a whole number: ")
+        else:
+            dist_trees += [centers]
+    all_inds, all_dists = find_nearest_neighbors(eye.polar, centers)
+    # for cross_section in [eye[inner_shell], eye[outer_shell]]:
+    #     save = False
+    #     while not save:
+    #         thetas = []
+    #         phis = []
+    #         segment_image_size = image_size / (theta_num_segments * phi_num_segments)
+    #         print("Processing segments of the polar coordinates: ")
+    #         for theta_ind, (theta_min, theta_center, theta_max) in enumerate(zip(
+    #                 theta_boundaries[:-1], theta_centers, theta_boundaries[1:])):
+    #             for phi_ind, (phi_min, phi_center, phi_max) in enumerate(zip(
+    #                     phi_boundaries[:-1], phi_centers, phi_boundaries[1:])):
+    #                 cont = False
+    #                 while not cont:
+    #                     inds = ((cross_section.theta > theta_min - theta_pad) *
+    #                             (cross_section.theta < theta_max + theta_pad) *
+    #                             (cross_section.phi > phi_min - phi_pad) *
+    #                             (cross_section.phi < phi_max + phi_pad))
+    #                     cross_section_segment = cross_section.pts[inds]
+    #                     phi_displacement = phi_center - np.pi
+    #                     theta_displacement = theta_center - np.pi/2
+    #                     rot = rotate(cross_section_segment, phi_displacement, axis=2).T
+    #                     rot = rotate(rot, theta_displacement, axis=1).T
+    #                     polar1 = cartesian_to_spherical(rot)
+    #                     segment = Points(rot, rotate_com=False, polar=polar1,
+    #                                      spherical_conversion=False,
+    #                                      vals=cross_section.vals[inds])
+    #                     # 3. use low pass filter method from Eye object in fly_eye to find
+    #                     # centers of cone clusters/ommatidia.
+    #                     # a. rasterize the image so that we can use our image processing
+    #                     # algorithm in fly_eye
+    #                     img, (theta_vals, phi_vals) = segment.rasterize(image_size=segment_image_size)
+    #                     mask = img > 0
+    #                     mask = convex_hull_image(mask)
+    #                     cross_section_eye = fe.Eye(img, pixel_size=segment.raster_pixel_length,
+    #                                                mask=mask)
+    #                     cross_section_eye.theta_vals, cross_section_eye.phi_vals = theta_vals, phi_vals
+    #                     cross_section_eye.get_ommatidia(
+    #                         max_facets=maximum_facets / (theta_num_segments * phi_num_segments),
+    #                         min_facets=minimum_facets / (theta_num_segments * phi_num_segments),
+    #                         method=1)
+    #                     if cross_section_eye.ommatidia is not None:
+    #                         segment_phis, segment_thetas = cross_section_eye.ommatidia
+    #                         segment_thetas += theta_vals.min()
+    #                         segment_phis += phi_vals.min()
+    #                         segment_polar = np.array([segment_thetas, segment_phis, np.ones(len(segment_phis))]).T
+    #                         segment_pts = spherical_to_cartesian(segment_polar)
+    #                         rot = rotate(segment_pts, -theta_displacement, axis=1).T
+    #                         rot = rotate(rot, -phi_displacement, axis=2).T
+    #                         polar1 = cartesian_to_spherical(rot)
+    #                         theta, phi, _ = polar1.T
+    #                         within_bounds = ((theta >= theta_min) *
+    #                                          (theta < theta_max) *
+    #                                          (phi >= phi_min) *
+    #                                          (phi < phi_max))
+    #                         thetas += [theta[within_bounds]]
+    #                         phis += [phi[within_bounds]]
+    #                         if preview:
+    #                             plt.pcolormesh(theta_vals, phi_vals, img.T)
+    #                             plt.scatter(segment_thetas, segment_phis, color='r', marker='.')
+    #                             plt.gca().set_aspect('equal')
+    #                             plt.tight_layout()
+    #                             plt.xlabel("polar angle (theta)")
+    #                             plt.ylabel("azimuthal angle (phi)")
+    #                             plt.title("Eye Segment with Ommatidial Centers")
+    #                             plt.show()
+    #                         print("Continue with the same minimum and maximum ommatidial counts? ")
+    #                         response = None
+    #                         while response not in ['0', '1']:
+    #                             response = input("Press <1> for yes or <0> to analyze "
+    #                                              "the image using a different limits: ")
+    #                         cont = response == '1'
+    #                     else:
+    #                         print("Failed to extract ommatidia. Choose new ommatidia count limits: ")
+    #                         cont = False
+    #                     if not cont:
+    #                         minimum_facets = input("What is the minimum number of ommatidia? ")
+    #                         success = False
+    #                         while success is False:
+    #                             try:
+    #                                 minimum_facets = int(minimum_facets)
+    #                                 success = True
+    #                             except:
+    #                                 minimum_facets = input("The response must be a whole number: ")
+    #                         maximum_facets = input("What is the maximum number of ommatidia? ")
+    #                         success = False
+    #                         while success is False:
+    #                             try:
+    #                                 maximum_facets = int(maximum_facets)
+    #                                 success = True
+    #                             except:
+    #                                 maximum_facets = input("The response must be a whole number: ")
+    #                     print_progress(theta_ind * phi_num_segments + phi_ind + 1,
+    #                                    theta_num_segments * phi_num_segments)
+    #         print("\n")
+    #         thetas = np.concatenate(thetas)
+    #         phis = np.concatenate(phis)
+    #         cross_section.fit_surface()
+    #         radii = cross_section.interp_func(thetas, phis)
+    #         img, (theta_vals, phi_vals) = cross_section.rasterize(image_size=image_size)
+    #         if preview:
+    #             plt.pcolormesh(theta_vals, phi_vals, img.T)
+    #             plt.scatter(thetas, phis, color='r', marker='.')
+    #             plt.gca().set_aspect('equal')
+    #             plt.tight_layout()
+    #             plt.xlabel("polar angle (theta)")
+    #             plt.ylabel("azimuthal angle (phi)")
+    #             plt.show()
+    #         centers = np.array([thetas, phis, radii]).T
+    #         # tree = spatial.KDTree(centers)
+    #         # find clusters here and now! by finding point nearest each center
+    #         # dists, inds = [], []
+    #         # # this takes a lot of time and RAM so break it into chunks
+    #         # chunks = int(np.round(cross_section.polar.shape[0] / 10**4))
+    #         # chunks = np.array_split(cross_section.polar[:, :2], chunks, axis=0)
+    #         # old_prop = 0
+    #         # for num, coords in enumerate(chunks):
+    #         #     d, i = tree.query(coords, k=1)
+    #         #     dists += [d]
+    #         #     inds += [i]
+    #         #     prop = int(100 * ((num + 1) / len(chunks)))
+    #         #     print_progress(num + 1, len(chunks))
+    #         # print(".\n")
+    #         # inds = np.concatenate(inds)
+    #         # if preview:
+    #         #     # get random colorvals for scatterplot
+    #         #     cvals = {}
+    #         #     rand_vals = np.random.choice(list(set(inds)), len(set(inds)), replace=False)
+    #         #     for val, rand_val in zip(set(inds), rand_vals):
+    #         #         cvals[val] = rand_val
+    #         #     color_vals = np.array([cvals[ind] for ind in  inds])
+    #         #     polar_scatter = ScatterPlot3d(cross_section.pts, app=app,
+    #         #                                   colorvals=color_vals, cmap=plt.cm.tab20)
+    #         #     polar_scatter.show()
+    #         # segment_labels = inds
+    #         print("Continue with this image size? ")
+    #         response = None
+    #         while response not in ['0', '1']:
+    #             response = input("Press <1> for yes or <0> to rasterize "
+    #                              "the image using a different image size: ")
+    #         save = response == '1'
+    #         if not save:
+    #             image_size = input("What image size should we use (pixel count)? ")
+    #             success = False
+    #             while success is False:
+    #                 try:
+    #                     image_size = int(image_size)
+    #                     success = True
+    #                 except:
+    #                     image_size = input("The response must be a whole number: ")
+    #         else:
+    #             dist_trees += [centers]
+    #             # dist_trees += [tree]
+    #             # labels += [segment_labels]
+    # # inner_tree, outer_tree = dist_trees
+    # # inner_pts, outer_pts = inner_tree.data, outer_tree.data
+    # inner_pts, outer_pts = dist_trees
+    # inner_pts, outer_pts, dists = find_pairs(inner_pts, outer_pts)
+    # pairs = np.array([np.arange(len(inner_pts)), np.arange(len(inner_pts))]).T.astype(int)
+    # max_dist = 1.5 * np.median(dists)
+    # if preview:
+    #     for (t0_ind, t1_ind), dist in zip(pairs, dists):
+    #         if dist < max_dist:
+    #             xs, ys = np.array([inner_pts[t0_ind, :2], outer_pts[t1_ind, :2]]).T
+    #             plt.plot(xs, ys, 'k-')
+    #             plt.scatter(xs, ys, c=[0, 1], marker='.', cmap='viridis')
+    #     plt.gca().set_aspect('equal')
+    #     plt.show()
+    # breakpoint()
+    # pairs = pairs[dists <= max_dist]
+    # # pairs will allow us to convert from inner cluster labels to outer cluster labels
+    # # now the inside and outside labels are the same
+    # print("Finding clusters of points near ommatidia centers of inside shell: ")
+    # thickness = np.diff(np.percentile(eye.residuals, [.5, 99.5]))[0]
+    # # why is this not working at all? troubleshoot find_nearest_neighbors
+    # inner_lbls, inner_dists = find_nearest_neighbors(eye[inner_shell].polar, inner_pts, .1)
+    # print("\n")
+    # print("Finding clusters of points near ommatidia centers of outside shell: ")
+    # outer_lbls, outer_dists = find_nearest_neighbors(eye[outer_shell].polar, outer_pts, .1)
+    # print("\n")
+    # # inner_lbls, outer_lbls = labels
+    # # new_inner_lbls = inds[inner_lbls]
+    # all_inds = np.zeros(outer_shell.shape[0])
+    # all_inds[inner_shell] = inner_lbls
+    # all_inds[outer_shell] = outer_lbls
+
+    # find all labels with less than 10 pts and assign as nan
+    breakpoint()
+    labels, counts = np.unique(all_inds, return_counts=True)
+    labels_to_remove = labels[counts < 5]
+    remove_inds = np.array([lbl in labels_to_remove for lbl in all_inds])
+    all_inds[remove_inds] = np.nan
+    no_nans = np.isnan(all_inds) == False  # remove nans from both labels and coordinate data
+    eye = eye[no_nans]
+    all_inds = all_inds[no_nans]
     if preview:
         # get random colorvals for scatterplot
-        no_nans = np.isnan(all_inds) == False
-        rand_vals = np.random.permutation(np.arange(0, all_inds[no_nans].max() + 1)).astype(int)
-        colorvals = rand_vals[all_inds[no_nans].astype(int)]
-        polar_scatter = ScatterPlot3d(eye.pts[no_nans], colorvals=colorvals, cmap=plt.cm.tab20)
+        rand_vals = np.random.permutation(np.arange(0, all_inds.max() + 1)).astype(int)
+        colorvals = rand_vals[all_inds.astype(int)]
+        polar_scatter = ScatterPlot3d(eye.pts, colorvals=colorvals, cmap=plt.cm.tab20)
         polar_scatter.show()
+    eye.save(os.path.join(project_folder, "coordinates.points"))
     np.save(os.path.join(project_folder, "ommatidia_labels.npy"), all_inds)
     return all_inds
 
@@ -1530,13 +1742,14 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
         project_folder = kwargs['project_folder']
     else:
         project_folder = os.getcwd()
-    cluster_labels = np.array(cluster_labels, dtype=np.uint32)
+    cluster_labels = np.array(cluster_labels)
     eye = load_Points(os.path.join(project_folder, "coordinates.points"))
     data_to_save = dict()
     # cols = ['x_center', 'y_center', 'z_center', 'theta_center',
     #         'phi_center', 'r_center', 'children_rectangular', 'children_polar', 'n']
     cols = ['x_center', 'y_center', 'z_center',
-            'theta_center', 'phi_center', 'r_center', 'n']
+            'theta_center', 'phi_center', 'r_center', 'n',
+            'aspect_ratio']
     for col in cols:
         data_to_save[col] = []
     # for num, cone in enumerate(clusters):
@@ -1553,19 +1766,37 @@ def get_ommatidial_measurements(cluster_labels, preview=True, **kwargs):
         children_pts, children_polar = cone.pts.astype(
             float), cone.polar.astype(float)
         n = len(children_pts)
+        svd = np.linalg.svd(cone.pts.astype(float))[1]
+        aspect_ratio = svd[0] / svd[1]
         for lbl, vals in zip(
                 cols,
                 # [x_center, y_center, z_center, theta_center, phi_center, r_center,
                 #  children_pts.tolist(), children_polar.tolist(), n]):
-                [x_center, y_center, z_center, theta_center, phi_center, r_center, n]):
+                [x_center, y_center, z_center, theta_center, phi_center,
+                 r_center, n, aspect_ratio]):
             data_to_save[lbl] += [vals]
         print_progress(num, len(labels))
     print("\n")
     cone_cluster_data = pd.DataFrame.from_dict(data_to_save)
     cone_cluster_data.to_csv(os.path.join(project_folder, "ommatidia_measurements.csv"))
     cone_centers = np.array(cone_centers)
-    tree = spatial.KDTree(cone_centers)
-    dists, inds = tree.query(cone_centers, k=13)
+    ns = cone_cluster_data['n']
+    no_nans = np.isnan(ns) == False
+    scatter_ns = ScatterPlot3d(
+        cone_centers[no_nans],
+        size=10,
+        colorvals=ns[no_nans])
+    scatter_ns.show()
+    aspect_ratios = cone_cluster_data.aspect_ratio
+    no_nans = np.isnan(aspect_ratios) == False
+    scatter_aspect_ratio = ScatterPlot3d(
+        cone_centers[no_nans],
+        size=10,
+        colorvals=aspect_ratios[no_nans])
+    scatter_aspect_ratio.show()
+    no_nans = np.isnan(cone_centers).sum(1) == 0
+    tree = spatial.KDTree(cone_centers[no_nans])
+    dists, inds = tree.query(cone_centers[no_nans], k=13)
     dists = dists[:, 1:]
     upper_limit = np.percentile(dists.flatten(), 99)
     dists = dists[dists < upper_limit].flatten() 
@@ -1718,28 +1949,32 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
     orientations_dict = dict()
     eye = load_Points(os.path.join(project_folder, "coordinates.points"))
     cluster_lbls = np.load(os.path.join(project_folder, "ommatidia_labels.npy"))
+    approx_IOAs = []
+    anatomical_IOAs = []
+    pairs = []
+    orientations = []
+    radii = []
+    intersections = []
+    aspect_ratios = []
+    # for neighbor in cone.neighbor_lbls:
     for num, cone in cone_cluster_data.iterrows():
-        approx_IOAs = []
-        anatomical_IOAs = []
-        pairs = []
-        orientations = []
-        # for neighbor in cone.neighbor_lbls:
-        if isinstance(cone.neighbor_inds, str):
-            neighbor_inds = cone.neighbor_inds[1:-1].split(",")
-            neighbor_inds = [int(val) for val in neighbor_inds]
+        if isinstance(cone.neighbor_labels, str):
+            neighbor_labels = cone.neighbor_labels[1:-1].split(",")
+            neighbor_labels = [int(float(val)) for val in neighbor_labels]
         else:
-            neighbor_inds = cone.neighbor_inds
+            neighbor_labels = cone.neighbor_labels
         # store the centerpoint between each cone
-        centers = []
         if isinstance(cone.approx_axis, str):
             approx_direction = np.array(cone.approx_axis[1:-1].split(",")).astype(float)
         else:
             approx_direction = np.array(cone.approx_axis)
-        pts = eye.pts[cluster_lbls == num]
-        for neighbor_ind in neighbor_inds:
-            pair = tuple(sorted([num, neighbor_ind]))
+        pts = eye.pts[cluster_lbls == cone.label]
+        lbl = cone.label
+        for neighbor_ind in neighbor_labels:
+            pair = tuple(sorted([lbl, neighbor_ind]))
             if pair not in pairs:
-                neighbor_cone = cone_cluster_data.loc[neighbor_ind]
+                i = np.where(cone_cluster_data.label.values == neighbor_ind)[0][0]
+                neighbor_cone = cone_cluster_data.loc[i]
                 neighbor_pts = eye.pts[cluster_lbls == neighbor_ind]
                 # let's get the anatomical IOA
                 # first, find the best fitting plane to the union of the two clusters
@@ -1747,15 +1982,70 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
                 # using singular value decomposition, we can find the two principle components
                 # of all_pts, then project each cluster onto this basis
                 principle_components = np.linalg.svd(all_pts - all_pts.mean(0))[2]
-                pts_proj = np.dot(pts, principle_components)[:, :2]
-                neighbor_pts_proj = np.dot(neighbor_pts, principle_components)[:, :2]
+                inv_principle_components = np.linalg.inv(principle_components)
+                pts_proj = np.dot(pts - all_pts.mean(0), principle_components)
+                pts_proj[:, 2] = 0
+                neighbor_pts_proj = np.dot(neighbor_pts - all_pts.mean(0), principle_components)
+                neighbor_pts_proj[:, 2] = 0
                 # now, get the direction vectors for each projection using the first
                 # pricinple component of each projection
-                pts_direction = np.linalg.svd(pts_proj - pts_proj.mean(0))[2][0]
-                neighbor_pts_direction = np.linalg.svd(
-                    neighbor_pts_proj - neighbor_pts_proj.mean(0))[2][0]                
+                pts_svd = np.linalg.svd(pts_proj - pts_proj.mean(0))
+                pts_direction = pts_svd[2][0]
+                neighbor_pts_svd = np.linalg.svd(
+                    neighbor_pts_proj - neighbor_pts_proj.mean(0))
+                neighbor_pts_direction = neighbor_pts_svd[2][0]
+                aspect_ratio = min(pts_svd[1][0] / pts_svd[1][1],
+                                   neighbor_pts_svd[1][0] / neighbor_pts_svd[1][1])
                 # now, the anatomical IOA is the angle between these direction vectors
                 anatomical_IOA = angle_between(pts_direction, neighbor_pts_direction)
+                anatomical_IOA = min(anatomical_IOA, np.pi - anatomical_IOA)
+                # find the intersection point using these two direction vectors in the original basis
+                pts_direction_original = np.dot(
+                    pts_direction, inv_principle_components)
+                neighbor_pts_direction_original = np.dot(
+                    neighbor_pts_direction, inv_principle_components)
+                dir1 = pts_direction_original
+                dir2 = neighbor_pts_direction_original
+                pos1 = pts.mean(0)
+                pos2 = neighbor_pts.mean(0)
+                inter1 = intersection(pos1, dir1, pos2, dir2)
+                inter2 = intersection(pos2, dir2, pos1, dir1)
+                inter = (inter1 + inter2)/2
+                sidea = np.linalg.norm(pos1 - inter)
+                sideb = np.linalg.norm(pos2 - inter)
+                sidec = np.linalg.norm(pos2 - pos1)
+                radius = (sidea + sideb)/2
+                # check that the intersection is inside the sphere, not outside
+                # find distance from the center
+                inter_radius = np.linalg.norm(inter)
+                if inter_radius > cone.r_center:
+                    anatomical_IOA = -anatomical_IOA
+                    radius = -radius
+                ang = np.arccos((sidea**2 + sideb**2 - sidec**2)/(2 * sidea * sideb))
+                # troubleshooting: ang should be very close to anatomical_IOA
+                if abs(anatomical_IOA) > np.pi/2:
+                    scatter = ScatterPlot3d(pts - all_pts.mean(0), color=(1, 1, 0, 1))
+                    scatter2 = ScatterPlot3d(neighbor_pts - all_pts.mean(0),
+                                             color=(1, 0, 1, 1),
+                                             window=scatter.window)
+                    scatter.show()
+                    pts_center = pts_proj.mean(0)[:2]
+                    pts_offset = 10 * pts_direction[:2]
+                    pts_xs, pts_ys = np.array(
+                        [pts_center - pts_offset,
+                         pts_center + pts_offset]).T
+                    neighbor_center = neighbor_pts_proj.mean(0)[:2]
+                    neighbor_offset = 10 * neighbor_pts_direction[:2]
+                    neighbor_xs, neighbor_ys = np.array(
+                        [neighbor_center - neighbor_offset,
+                         neighbor_center + neighbor_offset]).T
+                    plt.scatter(pts_proj[:, 0], pts_proj[:, 1], color='r')
+                    plt.scatter(neighbor_pts_proj[:, 0], neighbor_pts_proj[:, 1], color='g')
+                    plt.plot(pts_xs, pts_ys, color='r')
+                    plt.plot(neighbor_xs, neighbor_ys, color='g')
+                    plt.gca().set_aspect('equal')
+                    plt.show()
+                    breakpoint()
                 # now, the approx IOA:
                 # get the approx direction vector from the neighboring cone
                 if isinstance(neighbor_cone.approx_axis, str):
@@ -1782,27 +2072,38 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
                 th2, ph2 = neighbor_cone.theta_center, neighbor_cone.phi_center
                 orientation = np.arctan2(ph2 - ph1, th2 - th1)
                 orientations += [orientation]
+                radii += [radius]
+                intersections += [inter]
+                aspect_ratios += [aspect_ratio]
                 anatomical_IOAs += [anatomical_IOA]
                 approx_IOAs += [approx_IOA]
                 pairs += [pair]
-        print_progress(num, len(labels))
+        print_progress(num + 1, len(labels))
     print("\n")
     pairs_tested = np.array(list(pairs))
     IOA_approx = np.array(list(approx_IOAs))
     IOA_anatomical = np.array(list(anatomical_IOAs))
     orientations = np.array(list(orientations))
+    radii = np.array(list(radii))
+    intersections = np.array(list(intersections))
+    # breakpoint()
+    # scatter = ScatterPlot3d(intersections, colorvals=orientations)
+    # point = ScatterPlot3d(intersections.mean(0)[np.newaxis], window=scatter.window, size=10)
+    # scatter.show()
     data_to_save = dict()
     cols = ['cluster1', 'cluster2',
             'cluster1_x', 'cluster1_y', 'cluster1_z',
             'cluster2_x', 'cluster2_y', 'cluster2_z', 
             'cluster1_theta', 'cluster1_phi', 'cluster1_radii',
             'cluster2_theta', 'cluster2_phi', 'cluster2_radii',
-            'approx_angle', 'anatomical_angle']
+            'approx_angle', 'anatomical_angle', 'orientation', 'radius']
     for col in cols:
         data_to_save[col] = []
-    for num, (pair, approx, anatomical) in enumerate(
-            zip(pairs_tested, IOA_approx, IOA_anatomical)):
+    for num, (pair, approx, anatomical, orientation, radius) in enumerate(
+            zip(pairs_tested, IOA_approx, IOA_anatomical, orientations, radii)):
         ind1, ind2 = pair
+        ind1 = np.where(cone_cluster_data.label.values == ind1)[0][0]
+        ind2 = np.where(cone_cluster_data.label.values == ind2)[0][0]
         cluster1 = cone_cluster_data.loc[ind1]
         cluster2 = cone_cluster_data.loc[ind2]
         for lbl, vals in zip(
@@ -1812,7 +2113,7 @@ def get_interommatidial_measurements(cone_cluster_data, preview=True, **kwargs):
                  cluster2.x_center, cluster2.y_center, cluster2.z_center, 
                  cluster1.theta_center, cluster1.phi_center, cluster1.r_center,
                  cluster2.theta_center, cluster2.phi_center, cluster2.r_center,
-                 approx, anatomical]):
+                 approx, anatomical, orientation, radius]):
             data_to_save[lbl] += [vals]
         print_progress(num, len(pairs_tested))
     print("\n")
