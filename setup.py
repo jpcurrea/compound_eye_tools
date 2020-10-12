@@ -4,7 +4,7 @@ from setuptools import setup
 
 setup(
     name='compound_eye_tools',
-    version='0.1.0',
+    version='0.1.1',
     author='John Paul Currea',
     author_email='johnpaulcurrea@gmail.com',
     packages=['compound_eye_tools'],
